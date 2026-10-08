@@ -6,8 +6,29 @@ and settings as the Forge VS Code extension, with no editor. Built with
 
 The design is `docs/forge-desktop-plan.md` in
 [AmineXSaid/FORGE](https://github.com/AmineXSaid/FORGE). This repository is
-milestone **M1**: a window where you chat with the real agent in a folder you
-choose.
+milestones **M1** (chat with the real agent in a folder you choose) and the
+desktop shell of **M2** (title bar, sessions sidebar, project switcher), plus
+the **Changes** pane from M6.
+
+## The window
+
+![Forge Desktop: sessions, chat, and the Changes pane](docs/shell/3-changes-pane.png)
+
+- **Title bar** (the window has no native frame): the project, with a menu of
+  recent projects and Open folder…; the git branch; a sidebar toggle; and
+  **Changes** with the working tree's `+added −removed` lines, updated while
+  the agent works.
+- **Sidebar**: New session and the project's sessions, from Forge's session
+  manager: groups, live status dots, unread, search and filters, rename and
+  archive. Settings opens in the app (Ctrl+,).
+- **Chat**: Forge's chat page: the composer, permission prompts, model and
+  mode menus, tool output, rewind and fork.
+- **Changes pane** (Ctrl+Shift+D): every changed file against HEAD, with its
+  line counts, and the selected file's diff, inline or side by side.
+- Switching projects restarts the host in the new folder. The sidebar and
+  pane widths are remembered.
+
+Shortcuts: Ctrl+B sidebar, Ctrl+Shift+D Changes, Ctrl+, Settings.
 
 ## How it works
 
@@ -17,7 +38,9 @@ choose.
                                                                             └── Claude Code CLI
 ```
 
-- **The page** is Forge's own chat page: `dist/media` from a Forge build, and
+- **The page** is Forge's `desktop` page (`src/webview/src/desktop/` in
+  FORGE): the shell above, built from Forge's own session list, chat, settings
+  and diff renderer. It is Forge's page: `dist/media` from a Forge build, and
   the HTML that Forge's `WebViewService` writes for its chat view (printed at
   build time). An initialization script gives it the `acquireVsCodeApi()` it
   expects. Its `postMessage` calls `forge_send`, and host messages come back as
@@ -28,6 +51,10 @@ choose.
   state in JSON files, `node:fs`, a file log, native dialogs). Members the
   shim doesn't implement throw `Forge Desktop: vscode.<name> is not available
   yet`, and Forge's dispatcher reports that as a failed request.
+- **Rust** also serves the shell's own calls (`src-tauri/src/desktop.rs`):
+  project info and switching (to a recent project, or through the folder
+  picker), git status and one file's before/after (only files git lists as
+  changed), and the window buttons.
 - **Rust** checks every page message before it reaches Node: a known type,
   ids of a sane size, a size limit, and no page-supplied `webviewId`. It runs
   a fixed list of host calls (folder, file and save dialogs; http, https and
@@ -55,7 +82,9 @@ pnpm run prepare:app   # builds Forge's webview and claude.exe, the host, and st
 pnpm dev               # opens the window (`pnpm build` makes the installer)
 ```
 
-If Forge is somewhere else, set `FORGE_SRC` to that folder.
+If Forge is somewhere else, set `FORGE_SRC` to that folder. The window needs
+Forge's `desktop` page, which is on FORGE's `claude/dazzling-cori-sdq7bx`
+branch until it is merged: `git -C FORGE checkout claude/dazzling-cori-sdq7bx`.
 
 `prepare:app` must run on Windows. pnpm installs `claude.exe` only for the
 machine it runs on, and Forge's build copies it into the app.
@@ -106,5 +135,5 @@ These come in later milestones (plan §4.5):
   one logs `vscode.window.createWebviewPanel is not available yet`.
 - Quick picks and input boxes, which answer "cancelled".
 - Endpoint tokens in Credential Manager. Until then they are kept in memory.
-- Light theme; native menus; tray; toasts; several windows; the terminal.
+- Light theme; tray; toasts; several windows; an embedded terminal.
 - Only the dark VS Code theme variables are defined (`web/desktop-host.css`).

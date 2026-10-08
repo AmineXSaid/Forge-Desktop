@@ -176,6 +176,11 @@
   --vscode-button-secondaryHoverBackground: #3c3c3c;
   --vscode-textLink-activeForeground: #4daafc;
   --vscode-editor-findMatchHighlightBackground: #9e6a03;
+  /* The window chrome around the chat (Dark Modern's title and activity bar). */
+  --vscode-titleBar-activeBackground: #181818;
+  --vscode-titleBar-activeForeground: #cccccc;
+  --vscode-titleBar-border: #2b2b2b;
+  --vscode-activityBar-background: #181818;
   --vscode-font-size: 13px;
   --vscode-editor-font-size: 14px;
 }

@@ -31,6 +31,9 @@ struct BridgeState {
     channel: Option<Channel<Value>>,
     /// Host messages sent before the page attached, in order.
     outbound: Vec<Value>,
+    /// Bumped by every reset, so a host that was replaced on purpose (a
+    /// project switch) is not reported as having crashed.
+    generation: u64,
 }
 
 impl Bridge {
@@ -79,6 +82,21 @@ impl Bridge {
             }
             None => state.outbound.push(message),
         }
+    }
+
+    /// Stop the host and forget the page's channel and queues: the next
+    /// `start` begins clean (a project switch, followed by a page reload).
+    pub fn reset(&self) {
+        self.stop();
+        let mut state = self.inner.lock().unwrap();
+        state.generation += 1;
+        state.channel = None;
+        state.inbound.clear();
+        state.outbound.clear();
+    }
+
+    fn generation(&self) -> u64 {
+        self.inner.lock().unwrap().generation
     }
 
     pub fn stop(&self) {
@@ -182,9 +200,11 @@ pub fn start(app: &AppHandle, launch: Launch) -> Result<(), String> {
     let mut stdin = child.stdin.take().ok_or("the host has no stdin")?;
     paths::log("info", &format!("host started (pid {}) in {}", child.id(), launch.workspace.display()));
 
+    let generation;
     {
         let bridge = app.state::<Bridge>();
         let mut state = bridge.inner.lock().unwrap();
+        generation = state.generation;
         for line in state.inbound.drain(..) {
             write_line(&mut stdin, &line)?;
         }
@@ -213,7 +233,9 @@ pub fn start(app: &AppHandle, launch: Launch) -> Result<(), String> {
             }
         }
         paths::log("warn", "the host's output closed");
-        crate::host_exited(&app);
+        if app.state::<Bridge>().generation() == generation {
+            crate::host_exited(&app);
+        }
     });
     Ok(())
 }

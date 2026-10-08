@@ -11,7 +11,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { forge, hostBundle, repo, requireForge, stageForge, stageWeb } from './paths.mjs';
-import { withHostStyles } from './html.mjs';
+import { createHash } from 'node:crypto';
+import { asDesktopPage, withAssetFolder, withHostStyles } from './html.mjs';
 
 requireForge();
 const need = (file, hint) => {
@@ -41,7 +42,14 @@ if (!binary) console.warn('[forge-desktop] no Claude Code binary in resources/: 
 
 // --- stage/web --------------------------------------------------------------
 fs.rmSync(stageWeb, { recursive: true, force: true });
-copy(path.join(forge, 'dist', 'media'), path.join(stageWeb, 'dist', 'media'));
+const media = path.join(forge, 'dist', 'media');
+const hash = createHash('sha256');
+for (const name of fs.readdirSync(media, { recursive: true }).map(String).sort()) {
+	const file = path.join(media, name);
+	if (fs.statSync(file).isFile()) hash.update(name).update(fs.readFileSync(file));
+}
+const assetFolder = `assets-${hash.digest('hex').slice(0, 12)}`;
+copy(media, path.join(stageWeb, assetFolder));
 for (const art of ['forge-welcome-light.png', 'forge-welcome-dark.png']) {
 	fs.mkdirSync(path.join(stageWeb, 'resources'), { recursive: true });
 	fs.copyFileSync(path.join(forge, 'resources', art), path.join(stageWeb, 'resources', art));
@@ -58,7 +66,10 @@ execFileSync(process.execPath, [hostBundle, '--print-html', raw], {
 	stdio: ['ignore', 'ignore', 'inherit'],
 	timeout: 60_000,
 });
-fs.writeFileSync(path.join(stageWeb, 'index.html'), withHostStyles(fs.readFileSync(raw, 'utf8')));
+fs.writeFileSync(path.join(stageWeb, 'index.html'), withAssetFolder(withHostStyles(asDesktopPage(fs.readFileSync(raw, 'utf8'))), assetFolder));
 fs.rmSync(scratch, { recursive: true, force: true });
+// The window opens index.html?build=<id> (src-tauri/src/lib.rs reads this file
+// at compile time), so a new build never gets the webview's cached page.
+fs.writeFileSync(path.join(stageWeb, 'build-id'), assetFolder.slice('assets-'.length));
 
 console.log(`[forge-desktop] staged ${path.relative(repo, stageForge)} and ${path.relative(repo, stageWeb)}`);

@@ -7,6 +7,8 @@
 //! 3. The host is Forge's extension host in Node (`forge-host.cjs`), joined
 //!    to the page through `forge_send` / `forge_attach` and stdio.
 
+mod desktop;
+mod git;
 mod host_calls;
 mod ipc;
 mod paths;
@@ -53,8 +55,23 @@ const INIT_SCRIPT: &str = r#"
     return api;
   };
   document.addEventListener('DOMContentLoaded', attach);
+
+  // The desktop shell's own calls (src/desktop.rs); Forge's page reads them
+  // through its DesktopHost interface (src/webview/src/desktop/desktopHost.ts).
+  const call = (cmd, args) => core().invoke(cmd, args);
+  window.forgeDesktop = Object.freeze({
+    info: () => call('desktop_info'),
+    openProject: (path) => call('desktop_open_project', { path: path ?? null }),
+    gitStatus: () => call('desktop_git_status'),
+    gitDiff: (path) => call('desktop_git_diff', { path }),
+    windowAction: (action) => call('desktop_window', { action }),
+  });
 })();
 "#;
+
+/// This build's page and assets (`scripts/stage.mjs`). In the page URL, so the
+/// webview's cache never serves a previous build's page.
+const BUILD_ID: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../stage/web/build-id"));
 
 #[tauri::command]
 fn forge_send(bridge: tauri::State<'_, Bridge>, message: Value) -> Result<(), String> {
@@ -73,7 +90,7 @@ fn folder_from_args() -> Option<PathBuf> {
 }
 
 /// `canonicalize` on Windows gives `\\?\C:\...`; the CLI and Forge want `C:\...`.
-fn clean(path: PathBuf) -> PathBuf {
+pub(crate) fn clean(path: PathBuf) -> PathBuf {
     let s = path.to_string_lossy();
     match s.strip_prefix(r"\\?\") {
         Some(rest) if !rest.starts_with("UNC") => PathBuf::from(rest),
@@ -91,7 +108,7 @@ fn fatal(app: &AppHandle, message: String) {
         .show(move |_| handle.exit(1));
 }
 
-fn open_project(app: &AppHandle, folder: PathBuf) {
+pub(crate) fn open_project(app: &AppHandle, folder: PathBuf) {
     let dirs = match paths::dirs(app) {
         Ok(d) => d,
         Err(e) => return fatal(app, format!("Forge could not find its folders: {e}")),
@@ -101,6 +118,7 @@ fn open_project(app: &AppHandle, folder: PathBuf) {
     if let Err(e) = recent.save(&dirs.data) {
         paths::log("warn", &format!("could not save recent.json: {e}"));
     }
+    *app.state::<desktop::Project>().0.lock().unwrap() = Some(folder.clone());
     if let Some(window) = app.get_webview_window("main") {
         let name = folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| folder.display().to_string());
         let _ = window.set_title(&format!("{name} — Forge"));
@@ -166,15 +184,27 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(Bridge::default())
-        .invoke_handler(tauri::generate_handler![forge_send, forge_attach])
+        .manage(desktop::Project::default())
+        .invoke_handler(tauri::generate_handler![
+            forge_send,
+            forge_attach,
+            desktop::desktop_info,
+            desktop::desktop_open_project,
+            desktop::desktop_git_status,
+            desktop::desktop_git_diff,
+            desktop::desktop_window,
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             paths::init_log(&log_dir_for(&handle));
             paths::log("info", &format!("Forge Desktop {} starting", handle.package_info().version));
-            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            let page = format!("index.html?build={}", BUILD_ID.trim());
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App(page.into()))
                 .title("Forge")
                 .inner_size(1100.0, 780.0)
-                .min_inner_size(600.0, 400.0)
+                .min_inner_size(720.0, 480.0)
+                // The shell draws its own title bar (desktop/TitleBar.vue).
+                .decorations(false)
                 .theme(Some(tauri::Theme::Dark))
                 .initialization_script(INIT_SCRIPT)
                 .build()?;

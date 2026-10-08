@@ -1,7 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The chat window: Tauri's core events and window basics. Forge's own commands (forge_send, forge_attach) are app commands; the dialog and opener plugins are used from Rust only, never from the page.",
-  "windows": ["main"],
-  "permissions": ["core:default"]
+  "description": "The chat window: Tauri's core events, and dragging the custom title bar. Forge's own commands (forge_send, forge_attach, desktop_*) are app commands that check their input; the dialog and opener plugins are used from Rust only, never from the page.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize"
+  ]
 }
