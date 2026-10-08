@@ -64,6 +64,8 @@ const INIT_SCRIPT: &str = r#"
     openProject: (path) => call('desktop_open_project', { path: path ?? null }),
     gitStatus: () => call('desktop_git_status'),
     gitDiff: (path) => call('desktop_git_diff', { path }),
+    gitDiscard: (path) => call('desktop_git_discard', { path }),
+    notify: (title, body) => call('desktop_notify', { title, body }),
     windowAction: (action) => call('desktop_window', { action }),
   });
 })();
@@ -183,6 +185,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(Bridge::default())
         .manage(desktop::Project::default())
         .invoke_handler(tauri::generate_handler![
@@ -192,6 +195,8 @@ pub fn run() {
             desktop::desktop_open_project,
             desktop::desktop_git_status,
             desktop::desktop_git_diff,
+            desktop::desktop_git_discard,
+            desktop::desktop_notify,
             desktop::desktop_window,
         ])
         .setup(|app| {

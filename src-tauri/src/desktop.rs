@@ -131,3 +131,30 @@ pub fn desktop_window(window: WebviewWindow, action: String) -> Result<Value, St
     };
     result.map(|_| Value::Null).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn desktop_git_discard(app: AppHandle, path: String) -> Result<(), String> {
+    let dir = current(&app).ok_or("no project is open")?;
+    if path.len() > 4096 {
+        return Err("path too long".into());
+    }
+    paths::log("info", &format!("discarding changes to {path}"));
+    tauri::async_runtime::spawn_blocking(move || git::discard(&dir, &path)).await.map_err(|e| e.to_string())?
+}
+
+/// An OS notification, only while the window is not focused (a focused window
+/// already shows what happened). Title and body are capped.
+#[tauri::command]
+pub fn desktop_notify(app: AppHandle, window: WebviewWindow, title: String, body: String) -> Result<(), String> {
+    if window.is_focused().unwrap_or(false) {
+        return Ok(());
+    }
+    use tauri_plugin_notification::NotificationExt;
+    let cap = |s: String, n: usize| s.chars().take(n).collect::<String>();
+    app.notification()
+        .builder()
+        .title(cap(title, 80))
+        .body(cap(body, 240))
+        .show()
+        .map_err(|e| e.to_string())
+}

@@ -21,7 +21,7 @@ export function withHostStyles(html) {
 	}
 	return html
 		.replace('<head>', '<head>\n    <link rel="stylesheet" href="desktop-host.css" />')
-		.replace('<body>', '<body class="vscode-dark" data-vscode-theme-kind="vscode-dark">');
+		.replace('<body>', '<body class="vscode-light forge-desktop" data-vscode-theme-kind="vscode-light">');
 }
 
 /**

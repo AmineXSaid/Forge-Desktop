@@ -194,6 +194,40 @@ pub fn file_diff(cwd: &Path, path: &str) -> Result<FileDiff, String> {
     })
 }
 
+/// Throw away one changed file's changes: back to HEAD if HEAD has it, else
+/// remove it (a new file). The path must be one git lists as changed, and a
+/// conflicted file is left alone (that is a merge to resolve, not a discard).
+pub fn discard(cwd: &Path, path: &str) -> Result<(), String> {
+    let st = status(cwd);
+    if !st.is_repo {
+        return Err("not a git repository".into());
+    }
+    let file = st.files.into_iter().find(|f| f.path == path).ok_or("that file has no changes")?;
+    if file.status == "conflicted" {
+        return Err("a conflicted file is resolved, not discarded".into());
+    }
+    let top = PathBuf::from(String::from_utf8_lossy(&git(cwd, &["rev-parse", "--show-toplevel"])?).trim());
+    let head = has_head(&top);
+    let mut paths = vec![file.path.clone()];
+    if let Some(original) = file.original_path.clone() {
+        paths.push(original);
+    }
+    for p in &paths {
+        let disk = inside(&top, p).ok_or("that path is outside the project")?;
+        let in_head = head && git(&top, &["cat-file", "-e", &format!("HEAD:{p}")]).is_ok();
+        if in_head {
+            git(&top, &["checkout", "-q", "HEAD", "--", p])?;
+        } else {
+            // Not in HEAD: unstage it if staged, then remove it from disk.
+            let _ = git(&top, &["rm", "-q", "--cached", "--ignore-unmatch", "--", p]);
+            if disk.is_file() || disk.is_symlink() {
+                std::fs::remove_file(&disk).map_err(|e| format!("could not remove {p}: {e}"))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +287,15 @@ mod tests {
         assert!(file_diff(&dir, "../../etc/passwd").is_err(), "only files git lists");
         assert!(file_diff(&dir, ".git/config").is_err());
         assert!(!status(&std::env::temp_dir().join("forge-not-a-repo-xyz")).is_repo);
+
+        // Discard: a modified file goes back to HEAD, a new one is removed,
+        // and nothing outside the change list is touched.
+        assert!(discard(&dir, "../outside.txt").is_err());
+        discard(&dir, "kept.txt").unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("kept.txt")).unwrap(), "one\ntwo\n");
+        discard(&dir, "fresh.txt").unwrap();
+        assert!(!dir.join("fresh.txt").exists());
+        assert!(status(&dir).files.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

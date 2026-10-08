@@ -5,7 +5,7 @@ import { asDesktopPage, withAssetFolder, withHostStyles } from '../scripts/html.
 test('the host stylesheet comes first in <head>, the theme class goes on <body>', () => {
 	const out = withHostStyles('<!DOCTYPE html><html><head><meta charset="UTF-8" /><link href="dist/media/style.css" rel="stylesheet" /></head><body><div id="app"></div></body></html>');
 	assert.ok(out.indexOf('desktop-host.css') < out.indexOf('dist/media/style.css'), "Forge's styles load after the host's, as in VS Code");
-	assert.match(out, /<body class="vscode-dark"/);
+	assert.match(out, /<body class="vscode-light forge-desktop"/);
 });
 
 test('HTML of an unexpected shape is refused rather than half-patched', () => {
