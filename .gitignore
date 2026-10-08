@@ -1,0 +1,5 @@
+node_modules/
+stage/
+src-tauri/target/
+src-tauri/gen/
+*.log

@@ -1,0 +1,28 @@
+{
+  "name": "forge-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Forge as a desktop app: Forge's webview and host in a Tauri window, with no editor.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "forge:build": "node scripts/build-forge.mjs",
+    "build:host": "node scripts/build-host.mjs",
+    "stage": "node scripts/stage.mjs",
+    "prepare:app": "node scripts/build-forge.mjs && node scripts/build-host.mjs && node scripts/stage.mjs",
+    "dev": "node scripts/build-host.mjs && node scripts/stage.mjs && tauri dev",
+    "build": "pnpm run prepare:app && tauri build",
+    "tauri": "tauri",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node scripts/build-host.mjs && node --test \"test/*.test.mjs\" && cargo test --manifest-path src-tauri/Cargo.toml"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.1",
+    "@types/node": "^22.10.0",
+    "esbuild": "^0.27.2",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.28.0"
+}
