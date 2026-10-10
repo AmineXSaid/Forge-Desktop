@@ -61,6 +61,11 @@ export type ChangedFile = {
 export type GitStatus = { isRepo: boolean; branch: string | null; files: ChangedFile[] };
 export type FileDiff = { path: string; status: string; original: string; modified: string; tooLargeOrBinary: boolean };
 export type Answer = { kind: 'allow' | 'always' | 'deny' | 'answer'; message?: string; answers?: Record<string, string> };
+export type Scope = 'user' | 'project' | 'local';
+export type CcSettings = { user: Record<string, any>; project: Record<string, any>; local: Record<string, any>; hasProject: boolean; errors: string[] };
+export type Extension = { name: string; description: string; scope: 'user' | 'project'; path: string };
+export type McpServer = { name: string; transport: string; target: string; scope: 'user' | 'project' | 'local' };
+export type Extensions = { skills: Extension[]; agents: Extension[]; commands: Extension[]; mcpServers: McpServer[] };
 export type WindowAction = 'minimize' | 'toggleMaximize' | 'close' | 'isMaximized';
 
 /** Every command, with its arguments and result. */
@@ -89,6 +94,15 @@ export interface Commands {
   notify: [{ title: string; body: string }, void];
   open_url: [{ url: string }, void];
   reveal: [{ path: string }, void];
+  cc_settings_get: [{}, CcSettings];
+  cc_settings_set: [{ scope: Scope; key: string; value: unknown }, void];
+  /** Shows a native confirmation with the command; false when the person cancels. */
+  hook_add: [{ scope: Scope; event: string; matcher: string; command: string; timeout: number | null }, boolean];
+  hook_remove: [{ scope: Scope; event: string; group: number; index: number }, void];
+  memory_read: [{ which: Scope }, string];
+  memory_write: [{ which: Scope; text: string }, void];
+  extensions_list: [{}, Extensions];
+  open_file: [{ path: string }, void];
 }
 
 export interface Backend {
