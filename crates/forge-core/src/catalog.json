@@ -1,0 +1,22 @@
+[
+  { "id": "anthropic", "name": "Anthropic", "kind": "cloud", "wire": "anthropic", "baseUrl": "https://api.anthropic.com", "auth": "apiKey", "keyUrl": "https://console.anthropic.com/settings/keys", "note": "Claude models with your own API key." },
+  { "id": "openai", "name": "OpenAI", "kind": "cloud", "wire": "openai-chat", "baseUrl": "https://api.openai.com/v1", "auth": "bearer", "keyUrl": "https://platform.openai.com/api-keys", "maxTokensField": "max_completion_tokens", "reasoning": true },
+  { "id": "openrouter", "name": "OpenRouter", "kind": "cloud", "wire": "openai-chat", "baseUrl": "https://openrouter.ai/api/v1", "auth": "bearer", "keyUrl": "https://openrouter.ai/keys", "reasoning": true, "note": "Hundreds of models behind one key." },
+  { "id": "google", "name": "Google Gemini", "kind": "cloud", "wire": "openai-chat", "baseUrl": "https://generativelanguage.googleapis.com/v1beta/openai", "auth": "bearer", "keyUrl": "https://aistudio.google.com/apikey", "reasoning": true },
+  { "id": "xai", "name": "xAI", "kind": "cloud", "wire": "openai-chat", "baseUrl": "https://api.x.ai/v1", "auth": "bearer", "keyUrl": "https://console.x.ai" },
+  { "id": "groq", "name": "Groq", "kind": "cloud", "wire": "openai-chat", "baseUrl": "https://api.groq.com/openai/v1", "auth": "bearer", "keyUrl": "https://console.groq.com/keys" },
+  { "id": "deepseek", "name": "DeepSeek", "kind": "cloud", "wire": "anthropic", "baseUrl": "https://api.deepseek.com/anthropic", "auth": "bearer", "modelsUrl": "https://api.deepseek.com/models", "keyUrl": "https://platform.deepseek.com/api_keys" },
+  { "id": "mistral", "name": "Mistral", "kind": "cloud", "wire": "openai-chat", "baseUrl": "https://api.mistral.ai/v1", "auth": "bearer", "keyUrl": "https://console.mistral.ai/api-keys" },
+  { "id": "moonshot", "name": "Moonshot (Kimi)", "kind": "cloud", "wire": "anthropic", "baseUrl": "https://api.moonshot.ai/anthropic", "auth": "bearer", "modelsUrl": "https://api.moonshot.ai/v1/models", "keyUrl": "https://platform.moonshot.ai/console/api-keys" },
+  { "id": "zai", "name": "Z.ai (GLM)", "kind": "cloud", "wire": "anthropic", "baseUrl": "https://api.z.ai/api/anthropic", "auth": "bearer", "keyUrl": "https://z.ai/manage-apikey/apikey-list" },
+  { "id": "together", "name": "Together", "kind": "cloud", "wire": "openai-chat", "baseUrl": "https://api.together.xyz/v1", "auth": "bearer", "keyUrl": "https://api.together.ai/settings/api-keys" },
+  { "id": "fireworks", "name": "Fireworks", "kind": "cloud", "wire": "openai-chat", "baseUrl": "https://api.fireworks.ai/inference/v1", "auth": "bearer", "keyUrl": "https://fireworks.ai/account/api-keys" },
+  { "id": "cerebras", "name": "Cerebras", "kind": "cloud", "wire": "openai-chat", "baseUrl": "https://api.cerebras.ai/v1", "auth": "bearer", "keyUrl": "https://cloud.cerebras.ai" },
+  { "id": "ollama", "name": "Ollama", "kind": "local", "wire": "openai-chat", "baseUrl": "http://127.0.0.1:11434/v1", "auth": "none" },
+  { "id": "lmstudio", "name": "LM Studio", "kind": "local", "wire": "openai-chat", "baseUrl": "http://127.0.0.1:1234/v1", "auth": "none" },
+  { "id": "llamacpp", "name": "llama.cpp", "kind": "local", "wire": "openai-chat", "baseUrl": "http://127.0.0.1:8080/v1", "auth": "none" },
+  { "id": "vllm", "name": "vLLM", "kind": "local", "wire": "openai-chat", "baseUrl": "http://127.0.0.1:8000/v1", "auth": "none" },
+  { "id": "jan", "name": "Jan", "kind": "local", "wire": "openai-chat", "baseUrl": "http://127.0.0.1:1337/v1", "auth": "none" },
+  { "id": "custom-openai", "name": "Custom (OpenAI-compatible)", "kind": "custom", "wire": "openai-chat", "baseUrl": "", "auth": "bearer" },
+  { "id": "custom-anthropic", "name": "Custom (Anthropic-compatible)", "kind": "custom", "wire": "anthropic", "baseUrl": "", "auth": "apiKey" }
+]

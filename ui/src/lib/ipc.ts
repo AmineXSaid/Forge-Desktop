@@ -47,8 +47,45 @@ export type Info = {
 export type Summary = { id: string; title: string; updated: number; branch: string | null; named: boolean; pinned: boolean; unread: boolean };
 export type Thinking = 'auto' | 'off' | 'low' | 'medium' | 'high';
 /** What a session's CLI starts with. */
-export type Launch = { model?: string | null; mode?: string | null; thinking?: Thinking | null; forkFrom?: string | null };
-export type Profile = { id: string; name: string; baseUrl: string; model: string; auth: 'apiKey' | 'bearer' | 'none'; hasKey: boolean };
+export type Launch = { model?: string | null; mode?: string | null; thinking?: Thinking | null; forkFrom?: string | null; route?: string | null };
+/** A connected provider. Sessions routed to it go through the Forge gateway as `<id>/<model>`. */
+export type Profile = {
+  id: string;
+  name: string;
+  preset: string | null;
+  wire: 'anthropic' | 'openai-chat';
+  baseUrl: string;
+  model: string;
+  fastModel: string;
+  auth: 'apiKey' | 'bearer' | 'none';
+  maxTokensField: string | null;
+  reasoning: boolean;
+  hasKey: boolean;
+};
+export type Preset = {
+  id: string;
+  name: string;
+  kind: 'cloud' | 'local' | 'custom';
+  wire: 'anthropic' | 'openai-chat';
+  baseUrl: string;
+  auth: 'apiKey' | 'bearer' | 'none';
+  keyUrl?: string;
+  modelsUrl?: string;
+  maxTokensField?: string;
+  reasoning: boolean;
+  note?: string;
+};
+export type ModelInfo = {
+  id: string;
+  name?: string;
+  context?: number;
+  inputPrice?: number;
+  outputPrice?: number;
+  tools?: boolean;
+  reasoning?: boolean;
+  vision?: boolean;
+};
+export type Detected = { preset: string; name: string; baseUrl: string; models: string[] };
 export type Settings = {
   profiles: Profile[];
   activeProfile: string | null;
@@ -104,6 +141,11 @@ export interface Commands {
   settings_get: [{}, Settings];
   settings_save: [{ settings: Settings }, Settings];
   profile_key: [{ id: string; key: string | null }, void];
+  provider_catalog: [{}, Preset[]];
+  /** Lists the provider's models with the key given (or the saved one): the key check. */
+  provider_check: [{ profile: Profile; key: string | null }, ModelInfo[]];
+  provider_models: [{ id: string; refresh: boolean }, ModelInfo[]];
+  providers_detect: [{}, Detected[]];
   git_status: [{}, GitStatus];
   git_diff: [{ path: string }, FileDiff];
   git_discard: [{ path: string }, void];

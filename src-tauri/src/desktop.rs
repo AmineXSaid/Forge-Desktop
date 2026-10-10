@@ -14,6 +14,8 @@ use forge_core::events::{self, Envelope, SessionEvent};
 use forge_core::meta::Meta;
 use forge_core::session_manager::{self, Limits};
 use forge_core::settings::{self, Settings};
+use forge_core::catalog::{self, ModelCache};
+use forge_core::gateway::Gateway;
 use forge_core::{cc_settings, git, recent, sessions, watch};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -34,6 +36,14 @@ pub struct AppState {
     /// The session the window shows: its turns don't mark it unread.
     focused: Mutex<Option<String>>,
     watch: Mutex<Option<watch::Watch>>,
+    /// The loopback gateway sessions routed to a provider go through.
+    gateway: OnceLock<Gateway>,
+    /// Keys read from the keychain, by profile id (cleared when one changes).
+    keys: Arc<Mutex<HashMap<String, String>>>,
+    /// The provider route each live session started with ("" = Claude account).
+    routes: Mutex<HashMap<String, String>>,
+    models: Mutex<ModelCache>,
+    http: forge_core::reqwest::Client,
 }
 
 enum Out {
@@ -101,6 +111,11 @@ impl Default for AppState {
             meta: OnceLock::new(),
             focused: Mutex::default(),
             watch: Mutex::default(),
+            gateway: OnceLock::new(),
+            keys: Arc::default(),
+            routes: Mutex::default(),
+            models: Mutex::default(),
+            http: forge_core::reqwest::Client::new(),
         }
     }
 }
@@ -120,6 +135,29 @@ impl AppState {
         let file = data.join("session-index.json");
         let _ = self.index.set((sessions::Index::load(&file), file));
         let _ = self.meta.set(Meta::load(data));
+        *self.models.lock().unwrap() = ModelCache::load(data);
+        // The gateway reads Settings on each request, so a provider changed in
+        // Settings applies to the next request without a restart.
+        let (dir, keys) = (data.to_path_buf(), self.keys.clone());
+        let resolve: forge_core::gateway::Resolve = Arc::new(move |id: &str| {
+            let profile = Settings::load(&dir).profiles.into_iter().find(|p| p.id == id)?;
+            let key = if profile.auth == "none" {
+                None
+            } else {
+                let cached = keys.lock().unwrap().get(id).cloned();
+                // Only a key found is kept: a missing one is asked for again next time.
+                cached.or_else(|| settings::key(id).inspect(|k| {
+                    keys.lock().unwrap().insert(id.to_string(), k.clone());
+                }))
+            };
+            Some(profile.upstream(key))
+        });
+        match Gateway::start(resolve) {
+            Ok(g) => {
+                let _ = self.gateway.set(g);
+            }
+            Err(e) => paths::log("error", &format!("the gateway did not start: {e}")),
+        }
     }
 
     fn save_index(&self) {
@@ -349,24 +387,39 @@ pub struct Launch {
     thinking: Option<String>,
     /// Start as a copy of this saved session (fork).
     fork_from: Option<String>,
+    /// The provider: a profile id, "" for the Claude account; None: the default.
+    route: Option<String>,
 }
 
 /// Start the session's CLI (resuming its transcript if it has one) without
 /// sending anything. Returns the live session.
 async fn start(app: &AppHandle, id: &str, launch: Launch) -> Result<Arc<Session>, String> {
     check_id(id)?;
+    let settings = Settings::load(&data_dir(app)?);
+    let profile = match launch.route.as_deref() {
+        Some("") => None,
+        Some(r) => Some(settings.profiles.iter().find(|p| p.id == r).cloned().ok_or("that provider is not connected")?),
+        None => settings.active().cloned(),
+    };
+    let route = profile.as_ref().map(|p| p.id.clone()).unwrap_or_default();
     if let Some(s) = running(app, id) {
-        return Ok(s);
+        if state(app).routes.lock().unwrap().get(id).is_none_or(|r| *r == route) {
+            return Ok(s);
+        }
+        // Another provider: the CLI restarts on the same transcript.
+        if s.is_busy() || s.needs_you() {
+            return Err("finish or stop this turn before switching provider".into());
+        }
+        state(app).live.remove(id);
+        s.stop();
     }
     let cwd = project(app)?;
     let binary = cli::find_claude().ok_or("Claude Code is not installed: no `claude` on PATH")?;
-    let settings = Settings::load(&data_dir(app)?);
-    let profile = settings.active().cloned();
-    let model = launch
-        .model
-        .filter(|m| cli::valid_model(m))
-        .or_else(|| profile.as_ref().map(|p| p.model.clone()).filter(|m| !m.is_empty()))
-        .or(settings.default_model.clone());
+    let model = match &profile {
+        // Through the gateway the model carries the provider's prefix; none: the provider's default.
+        Some(p) => launch.model.filter(|m| cli::valid_model(m)).map(|m| if m.starts_with(&format!("{}/", p.id)) { m } else { format!("{}/{m}", p.id) }),
+        None => launch.model.filter(|m| cli::valid_model(m)).or(settings.default_model.clone()),
+    };
     let mode = launch.mode.filter(|m| cli::MODES.contains(&m.as_str())).unwrap_or(settings.default_mode.clone());
     let thinking = match launch.thinking.as_deref() {
         Some(t) => Thinking::parse(t)?,
@@ -375,7 +428,14 @@ async fn start(app: &AppHandle, id: &str, launch: Launch) -> Result<Arc<Session>
     if let Some(f) = &launch.fork_from {
         check_id(f)?;
     }
-    let env = profile.map(|p| p.env(settings::key(&p.id))).unwrap_or_default();
+    let (env, env_remove) = match &profile {
+        Some(p) => {
+            let st = state(app);
+            let gw = st.gateway.get().ok_or("the Forge gateway is not running; see the log")?;
+            (gw.env(&p.id, &p.model, &p.fast_model), Gateway::ENV_REMOVE.iter().map(|v| v.to_string()).collect())
+        }
+        None => (vec![], vec![]),
+    };
     let handle = app.clone();
     let id = id.to_string();
     let session = tauri::async_runtime::spawn_blocking(move || {
@@ -395,7 +455,7 @@ async fn start(app: &AppHandle, id: &str, launch: Launch) -> Result<Arc<Session>
             // nonessential traffic is off), and the window must not say "Ask" then.
             permission_mode: Some(mode),
             env,
-            env_remove: vec![],
+            env_remove,
             thinking,
         };
         let sink_app = handle.clone();
@@ -403,6 +463,7 @@ async fn start(app: &AppHandle, id: &str, launch: Launch) -> Result<Arc<Session>
     })
     .await
     .map_err(|e| e.to_string())??;
+    state(app).routes.lock().unwrap().insert(session.id.clone(), route);
     state(app).live.insert(session.clone());
     Ok(session)
 }
@@ -532,7 +593,71 @@ pub fn profile_key(app: AppHandle, id: String, key: Option<String>) -> Result<()
     if !known {
         return Err("save the profile first".into());
     }
-    settings::set_key(&id, key.as_deref())
+    let saved = settings::set_key(&id, key.as_deref());
+    // After the write: a request in between must not cache the old key.
+    state(&app).keys.lock().unwrap().remove(&id);
+    state(&app).models.lock().unwrap().forget(&id);
+    saved
+}
+
+// ---------------------------------------------------------------- providers
+
+#[tauri::command]
+pub fn provider_catalog(app: AppHandle) -> Result<Vec<catalog::Preset>, String> {
+    Ok(catalog::presets(&data_dir(&app)?))
+}
+
+fn models_url_for(app: &AppHandle, p: &settings::Profile) -> Option<String> {
+    let preset = p.preset.as_deref()?;
+    catalog::presets(&data_dir(app).ok()?).into_iter().find(|c| c.id == preset)?.models_url
+}
+
+/// Check a provider before it is saved: list its models with the key given
+/// (or, for a saved profile, the key in the keychain). The models come back.
+#[tauri::command]
+pub async fn provider_check(app: AppHandle, profile: settings::Profile, key: Option<String>) -> Result<Vec<catalog::ModelInfo>, String> {
+    let ok_url = (profile.base_url.starts_with("http://") || profile.base_url.starts_with("https://")) && profile.base_url.len() <= 500;
+    if !ok_url || key.as_ref().is_some_and(|k| k.len() > 4096) {
+        return Err("the base URL must start with http:// or https://".into());
+    }
+    let key = key.filter(|k| !k.trim().is_empty()).or_else(|| settings::valid_profile_id(&profile.id).then(|| settings::key(&profile.id)).flatten());
+    if profile.auth != "none" && key.is_none() {
+        return Err("add a key first".into());
+    }
+    let url = models_url_for(&app, &profile);
+    let http = state(&app).http.clone();
+    let models = catalog::list_models(&http, &profile.wire, &profile.base_url, url.as_deref(), &profile.auth, key.as_deref()).await?;
+    paths::log("info", &format!("provider check: {} lists {} models", profile.base_url, models.len()));
+    Ok(models)
+}
+
+/// A connected provider's models: cached for a day unless `refresh`.
+#[tauri::command]
+pub async fn provider_models(app: AppHandle, id: String, refresh: bool) -> Result<Vec<catalog::ModelInfo>, String> {
+    if !refresh {
+        if let Some(m) = state(&app).models.lock().unwrap().fresh(&id) {
+            return Ok(m);
+        }
+    }
+    let data = data_dir(&app)?;
+    let profile = Settings::load(&data).profiles.into_iter().find(|p| p.id == id).ok_or("that provider is not connected")?;
+    let key = if profile.auth == "none" { None } else { settings::key(&id) };
+    let url = models_url_for(&app, &profile);
+    let http = state(&app).http.clone();
+    let models = catalog::list_models(&http, &profile.wire, &profile.base_url, url.as_deref(), &profile.auth, key.as_deref()).await?;
+    let st = state(&app);
+    let mut cache = st.models.lock().unwrap();
+    cache.put(&id, models.clone());
+    let _ = cache.save(&data);
+    Ok(models)
+}
+
+/// Local model servers answering on their default ports now.
+#[tauri::command]
+pub async fn providers_detect(app: AppHandle) -> Result<Vec<catalog::Detected>, String> {
+    let presets = catalog::presets(&data_dir(&app)?);
+    let http = state(&app).http.clone();
+    Ok(catalog::detect_local(&http, &presets).await)
 }
 
 #[tauri::command]

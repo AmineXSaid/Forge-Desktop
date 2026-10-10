@@ -104,6 +104,11 @@ const server = http.createServer((req, res) => {
 	req.on('data', (d) => (raw += d));
 	req.on('end', () => {
 		const url = req.url ?? '';
+		// With STUB_KEY set, only that key gets in (the gateway's tests: Forge attaches it).
+		if (process.env.STUB_KEY && req.headers['x-api-key'] !== process.env.STUB_KEY) {
+			res.writeHead(401, { 'content-type': 'application/json' });
+			return res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }));
+		}
 		if (req.method === 'POST' && url.startsWith('/v1/messages/count_tokens')) {
 			res.writeHead(200, { 'content-type': 'application/json' });
 			return res.end(JSON.stringify({ input_tokens: 10 }));

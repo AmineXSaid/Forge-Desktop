@@ -2,7 +2,7 @@
   let { checked, label, onchange, disabled = false }: { checked: boolean; label: string; onchange: (v: boolean) => void; disabled?: boolean } = $props();
 </script>
 
-<button class="sw" class:on={checked} role="switch" aria-checked={checked} aria-label={label} title={label} {disabled} onclick={() => onchange(!checked)}>
+<button type="button" class="sw" class:on={checked} role="switch" aria-checked={checked} aria-label={label} title={label} {disabled} onclick={() => onchange(!checked)}>
   <span class="knob"></span>
 </button>
 

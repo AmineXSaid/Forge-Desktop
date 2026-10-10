@@ -54,6 +54,7 @@
     if (k === 'n') { e.preventDefault(); app.newSession(); }
     else if (k === 'b') { e.preventDefault(); app.sidebar = !app.sidebar; }
     else if (k === 'd' && e.shiftKey) { e.preventDefault(); app.changes = !app.changes; }
+    else if (e.key === '/') { e.preventDefault(); app.pickerOpen = !app.pickerOpen; }
     else if (e.key === ',') { e.preventDefault(); if (settingsWindow.open) settingsWindow.close(); else settingsWindow.show(); }
     else if (k === 'o') { e.preventDefault(); call('open_project', { path: null }).catch((err) => toast(String(err), 'error')); }
   }

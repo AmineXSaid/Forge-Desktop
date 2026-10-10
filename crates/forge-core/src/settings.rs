@@ -1,10 +1,10 @@
 //! The app's settings: `<data>/settings.json`, plus endpoint keys in the OS
 //! keychain (Windows Credential Manager, macOS Keychain), never on disk.
 //!
-//! An endpoint profile points the CLI at an Anthropic-compatible server
-//! (Ollama, LM Studio, a gateway): the profile becomes `ANTHROPIC_*`
-//! variables for the sessions it starts. With no profile the CLI uses its own
-//! login (`claude login` or `ANTHROPIC_API_KEY`).
+//! A profile is a connected provider (from the catalog, or a custom URL).
+//! Sessions routed to it go through the Forge gateway, which attaches the
+//! key: the CLI only ever sees the gateway's token. With no profile the CLI
+//! uses its own login (`claude login` or `ANTHROPIC_API_KEY`).
 
 use std::fs;
 use std::path::Path;
@@ -12,6 +12,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::cli;
+use crate::gateway;
 
 const KEYCHAIN_SERVICE: &str = "com.msaid.forge";
 
@@ -36,12 +37,23 @@ pub struct Settings {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Profile {
+    /// Also the model prefix in the gateway (`<id>/<model>`).
     pub id: String,
     pub name: String,
+    /// The catalog preset it came from, if any.
+    pub preset: Option<String>,
+    /// "anthropic" (default) or "openai-chat".
+    pub wire: String,
     pub base_url: String,
     pub model: String,
+    /// For titles and other background calls; empty: `model`.
+    pub fast_model: String,
     /// "apiKey" (x-api-key), "bearer" (Authorization), or "none".
     pub auth: String,
+    /// openai-chat: "max_tokens" or "max_completion_tokens".
+    pub max_tokens_field: Option<String>,
+    /// openai-chat: the provider takes `reasoning_effort`.
+    pub reasoning: bool,
     /// Read from the keychain for the window; never stored in the file.
     #[serde(skip_deserializing)]
     pub has_key: bool,
@@ -75,6 +87,12 @@ impl Settings {
         }
         if self.default_model.as_deref().is_some_and(|m| !cli::valid_model(m)) {
             self.default_model = None;
+        }
+        for p in &mut self.profiles {
+            // Profiles from before the gateway were Anthropic-compatible endpoints.
+            if p.wire.is_empty() {
+                p.wire = "anthropic".into();
+            }
         }
         self.archived.retain(|id| cli::valid_session_id(id));
         self.archived.truncate(5000);
@@ -118,8 +136,7 @@ impl Settings {
 
 impl Profile {
     fn check(&self) -> Result<(), String> {
-        let id_ok = !self.id.is_empty() && self.id.len() <= 64 && self.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-        if !id_ok {
+        if !valid_profile_id(&self.id) {
             return Err("a profile id is letters, digits, - and _".into());
         }
         if self.name.trim().is_empty() || self.name.len() > 80 {
@@ -131,8 +148,16 @@ impl Profile {
         if !url_ok {
             return Err(format!("{}: the base URL must start with http:// or https://", self.name));
         }
-        if !self.model.is_empty() && !cli::valid_model(&self.model) {
-            return Err(format!("{}: that model name has characters a model name cannot have", self.name));
+        for m in [&self.model, &self.fast_model] {
+            if !m.is_empty() && !cli::valid_model(m) {
+                return Err(format!("{}: that model name has characters a model name cannot have", self.name));
+            }
+        }
+        if gateway::Wire::parse(&self.wire).is_none() {
+            return Err(format!("{}: unknown wire", self.name));
+        }
+        if self.max_tokens_field.as_deref().is_some_and(|f| !["max_tokens", "max_completion_tokens"].contains(&f)) {
+            return Err(format!("{}: unknown max tokens field", self.name));
         }
         if !["apiKey", "bearer", "none"].contains(&self.auth.as_str()) {
             return Err(format!("{}: unknown authentication", self.name));
@@ -140,37 +165,69 @@ impl Profile {
         Ok(())
     }
 
-    /// The variables a session started with this profile gets.
-    pub fn env(&self, key: Option<String>) -> Vec<(String, String)> {
-        let mut env = vec![("ANTHROPIC_BASE_URL".to_string(), self.base_url.trim_end_matches('/').to_string())];
-        let key = key.unwrap_or_default();
-        match self.auth.as_str() {
-            "apiKey" => env.push(("ANTHROPIC_API_KEY".into(), key)),
-            "bearer" => env.push(("ANTHROPIC_AUTH_TOKEN".into(), key)),
-            // Local servers take any token; the CLI wants one to be set.
-            _ => env.push(("ANTHROPIC_AUTH_TOKEN".into(), "none".into())),
+    /// Where the gateway sends this profile's requests.
+    pub fn upstream(&self, key: Option<String>) -> gateway::Upstream {
+        gateway::Upstream {
+            wire: gateway::Wire::parse(&self.wire).unwrap_or(gateway::Wire::Anthropic),
+            base_url: self.base_url.trim_end_matches('/').to_string(),
+            auth: match self.auth.as_str() {
+                "apiKey" => gateway::Auth::XApiKey,
+                "bearer" => gateway::Auth::Bearer,
+                _ => gateway::Auth::None,
+            },
+            key,
+            chat: gateway::openai_chat::Options {
+                max_tokens_field: self.max_tokens_field.clone().unwrap_or_else(|| "max_tokens".into()),
+                reasoning: self.reasoning,
+            },
         }
-        if !self.model.is_empty() {
-            for var in ["ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"] {
-                env.push((var.into(), self.model.clone()));
-            }
-        }
-        env
     }
+}
+
+/// A profile id: letters, digits, - and _ (it is a model prefix and a keychain name).
+pub fn valid_profile_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 fn entry(profile_id: &str) -> Option<keyring::Entry> {
     keyring::Entry::new(KEYCHAIN_SERVICE, &format!("endpoint:{profile_id}")).ok()
 }
 
+/// Debug builds only: keys for this run when the OS keychain refuses (a
+/// Linux dev box without a keyring daemon). Release builds have no fallback.
+#[cfg(debug_assertions)]
+static DEV_KEYS: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> = std::sync::Mutex::new(None);
+
 pub fn key(profile_id: &str) -> Option<String> {
+    #[cfg(debug_assertions)]
+    if let Some(k) = DEV_KEYS.lock().unwrap().as_ref().and_then(|m| m.get(profile_id).cloned()) {
+        return Some(k);
+    }
     entry(profile_id)?.get_password().ok()
 }
 
 pub fn set_key(profile_id: &str, value: Option<&str>) -> Result<(), String> {
+    #[cfg(debug_assertions)]
+    if let Some(m) = DEV_KEYS.lock().unwrap().as_mut() {
+        m.remove(profile_id);
+    }
     let e = entry(profile_id).ok_or("the keychain is not available")?;
     match value.map(str::trim).filter(|v| !v.is_empty()) {
-        Some(v) if v.len() <= 4096 => e.set_password(v).map_err(|err| format!("could not save the key: {err}")),
+        // Read back: a keychain can accept a key and then not give it back.
+        Some(v) if v.len() <= 4096 => match e.set_password(v).and_then(|_| match e.get_password() {
+            Ok(back) if back == v => Ok(()),
+            _ => Err(keyring::Error::NoEntry),
+        }) {
+            Ok(()) => Ok(()),
+            #[cfg(debug_assertions)]
+            Err(err) => {
+                crate::log::write("warn", &format!("debug build: the keychain refused the key ({err}); keeping it in memory for this run"));
+                DEV_KEYS.lock().unwrap().get_or_insert_with(Default::default).insert(profile_id.to_string(), v.to_string());
+                Ok(())
+            }
+            #[cfg(not(debug_assertions))]
+            Err(err) => Err(format!("the keychain did not keep the key: {err}")),
+        },
         Some(_) => Err("that key is too long".into()),
         None => match e.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -184,7 +241,7 @@ mod tests {
     use super::*;
 
     fn profile() -> Profile {
-        Profile { id: "local".into(), name: "Ollama".into(), base_url: "http://127.0.0.1:11434/".into(), model: "qwen3-coder:30b".into(), auth: "none".into(), has_key: false }
+        Profile { id: "local".into(), name: "Ollama".into(), wire: "anthropic".into(), base_url: "http://127.0.0.1:11434/".into(), model: "qwen3-coder:30b".into(), auth: "none".into(), ..Default::default() }
     }
 
     #[test]
@@ -199,13 +256,17 @@ mod tests {
     }
 
     #[test]
-    fn a_profile_becomes_environment() {
-        let env = profile().env(None);
-        assert!(env.contains(&("ANTHROPIC_BASE_URL".into(), "http://127.0.0.1:11434".into())));
-        assert!(env.contains(&("ANTHROPIC_AUTH_TOKEN".into(), "none".into())));
-        assert!(env.contains(&("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), "qwen3-coder:30b".into())));
-        let keyed = Profile { auth: "apiKey".into(), ..profile() }.env(Some("sk-1".into()));
-        assert!(keyed.contains(&("ANTHROPIC_API_KEY".into(), "sk-1".into())));
+    fn a_profile_becomes_an_upstream() {
+        let up = profile().upstream(None);
+        assert_eq!((up.wire, up.auth, up.base_url.as_str()), (gateway::Wire::Anthropic, gateway::Auth::None, "http://127.0.0.1:11434"));
+        let chat = Profile { wire: "openai-chat".into(), auth: "bearer".into(), max_tokens_field: Some("max_completion_tokens".into()), reasoning: true, ..profile() }.upstream(Some("sk-1".into()));
+        assert_eq!((chat.wire, chat.auth, chat.key.as_deref()), (gateway::Wire::OpenAiChat, gateway::Auth::Bearer, Some("sk-1")));
+        assert_eq!(chat.chat.max_tokens_field, "max_completion_tokens");
+        assert!(Profile { wire: "smoke-signals".into(), ..profile() }.check().is_err());
+        // A profile saved before the gateway reads as an Anthropic-compatible one.
+        let mut old: Settings = serde_json::from_str(r#"{"profiles":[{"id":"x","name":"Old","baseUrl":"http://h","model":"m","auth":"none"}]}"#).unwrap();
+        old.normalize();
+        assert_eq!(old.profiles[0].wire, "anthropic");
     }
 
     #[test]

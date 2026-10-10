@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
+  import ModelPicker from './ModelPicker.svelte';
   import { app, MODES, THINKING, toast, type SessionState } from '../lib/store.svelte';
   import type { Thinking } from '../lib/ipc';
   import { call } from '../lib/ipc';
@@ -21,10 +22,11 @@
     const id = session?.mode ?? app.settings?.defaultMode ?? 'default';
     return MODES.find((m) => m.id === id) ?? { id, label: id, short: id, desc: '' };
   });
-  const profile = $derived(app.settings?.profiles.find((p) => p.id === app.settings?.activeProfile));
+  const route = $derived(app.routeOf(session));
+  const profile = $derived(app.settings?.profiles.find((p) => p.id === route));
   const modelLabel = $derived.by(() => {
+    if (profile) return session?.modelChoice ?? (profile.model || profile.name);
     const m = session?.modelChoice ?? session?.model ?? app.settings?.defaultModel;
-    if (profile && !session?.modelChoice) return profile.model || profile.name;
     if (!m) return 'Default model';
     const known = app.models?.find((x) => x.value === m || (x as any).resolvedModel === m);
     return known ? known.displayName.replace(/\s*\(.*\)$/, '') : m;
@@ -63,13 +65,6 @@
     box?.focus();
   }
 
-  async function setModel(value: string) {
-    const s = await ensure();
-    s.modelChoice = value;
-    if (s.running) await call('session_configure', { id: s.id, mode: null, model: value }).catch((e) => toast(String(e), 'error'));
-    box?.focus();
-  }
-
   function modeMenu(e: MouseEvent) {
     openMenu(e.currentTarget as HTMLElement, [
       { header: 'Permissions' },
@@ -77,18 +72,11 @@
     ], { above: true, width: 300 });
   }
 
-  function modelMenu(e: MouseEvent) {
-    const current = session?.modelChoice ?? session?.model ?? 'default';
-    const models = app.models ?? [
-      { value: 'default', displayName: 'Default', description: 'The recommended model' },
-      { value: 'opus', displayName: 'Opus', description: 'Most capable for complex work' },
-      { value: 'sonnet', displayName: 'Sonnet', description: 'Fast and capable' },
-      { value: 'haiku', displayName: 'Haiku', description: 'Fastest for quick answers' },
-    ];
-    openMenu(e.currentTarget as HTMLElement, profile
-      ? [{ header: profile.name }, { label: profile.model || 'Server default', desc: profile.baseUrl, checked: true, run: () => {} }]
-      : [{ header: 'Model' }, ...models.map((m) => ({ label: m.displayName.replace(/\s*\(.*\)$/, ''), desc: m.description, checked: current === m.value, run: () => setModel(m.value) }))],
-      { above: true, width: 300 });
+  async function pick(r: string, model: string) {
+    app.pickerOpen = false;
+    const s = await ensure();
+    await app.pickModel(s, r, model);
+    box?.focus();
   }
 
   function key(e: KeyboardEvent) {
@@ -114,13 +102,16 @@
 </script>
 
 <div class="composer">
+  {#if app.pickerOpen}
+    <ModelPicker current={{ route, model: session?.modelChoice ?? profile?.model ?? null }} onpick={pick} onclose={() => (app.pickerOpen = false)} />
+  {/if}
   <textarea bind:this={box} bind:value={draft} rows="1" {placeholder} spellcheck="true" onkeydown={key} onfocus={() => app.prewarm()}></textarea>
   <div class="row">
     <button class="picker mode-{mode.id}" title="Permissions (Shift+Tab)" onclick={modeMenu}>
       <Icon name={mode.id === 'plan' ? 'plan' : mode.id === 'acceptEdits' ? 'pencil' : mode.id === 'bypassPermissions' ? 'bolt' : mode.id === 'auto' ? 'sparkle' : 'hand'} size={14} />
       {mode.short}<Icon name="chevron" size={12} />
     </button>
-    <button class="picker" title="Model" onclick={modelMenu}><Icon name="cpu" size={14} />{modelLabel}<Icon name="chevron" size={12} /></button>
+    <button class="picker model-pill" title="Model (Ctrl+/)" onclick={() => (app.pickerOpen = !app.pickerOpen)}><Icon name="cpu" size={14} />{#if profile}<span class="via">{profile.name}</span>{/if}{modelLabel}<Icon name="chevron" size={12} /></button>
     <button class="picker" class:on={thinking.id !== 'auto'} title="Thinking" onclick={thinkingMenu}><Icon name="brain" size={14} />{thinking.id === 'auto' ? 'Thinking' : thinking.label}<Icon name="chevron" size={12} /></button>
     <span class="grow"></span>
     {#if ctx}
@@ -138,6 +129,7 @@
 
 <style>
   .composer {
+    position: relative;
     background: var(--card); border-radius: var(--r-card); box-shadow: inset 0 0 0 1px var(--line-strong);
     transition: box-shadow var(--t) var(--ease);
   }
@@ -158,6 +150,8 @@
   .picker.mode-acceptEdits { color: var(--add-fg); }
   .picker.mode-bypassPermissions { background: var(--status-error-bg); color: var(--status-error-fg); }
   .picker.on { color: var(--ink); }
+  .via { color: var(--ink-4); font-weight: 400; }
+  .via::after { content: ' ·'; }
   .ctx { display: inline-flex; align-items: center; gap: 6px; font: 500 12px var(--font-mono); color: var(--ink-4); margin-right: 8px; }
   .ctx svg { transform: rotate(-90deg); }
   .ctx circle { fill: none; stroke-width: 2.2; }

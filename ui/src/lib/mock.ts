@@ -2,7 +2,7 @@
 // streamed reply with a permission prompt, git changes. Only loaded in dev
 // builds outside Tauri (see ipc.ts); never part of the app.
 
-import type { Backend, CcSettings, Envelope, Scope, SessionEvent, Settings } from './ipc';
+import type { Backend, CcSettings, Envelope, ModelInfo, Preset, Scope, SessionEvent, Settings } from './ipc';
 
 const now = Date.now();
 const H = 3600_000;
@@ -34,8 +34,7 @@ const saved: SessionEvent[] = [
 
 let settings: Settings = {
   profiles: [
-    { id: 'ollama', name: 'Ollama on this PC', baseUrl: 'http://127.0.0.1:11434', model: 'qwen3-coder:30b', auth: 'none', hasKey: false },
-    { id: 'openrouter', name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api', model: 'anthropic/claude-sonnet-4.5', auth: 'bearer', hasKey: true },
+    { id: 'openrouter', name: 'OpenRouter', preset: 'openrouter', wire: 'openai-chat', baseUrl: 'https://openrouter.ai/api/v1', model: 'qwen/qwen3-coder', fastModel: 'google/gemini-2.5-flash', auth: 'bearer', maxTokensField: null, reasoning: true, hasKey: true },
   ],
   activeProfile: null,
   defaultMode: 'default',
@@ -109,6 +108,28 @@ function setPath(obj: Record<string, any>, parts: string[], value: unknown) {
   if (!Object.keys(obj[first]).length) delete obj[first];
 }
 
+const PRESETS: Preset[] = [
+  { id: 'anthropic', name: 'Anthropic', kind: 'cloud', wire: 'anthropic', baseUrl: 'https://api.anthropic.com', auth: 'apiKey', keyUrl: 'https://console.anthropic.com/settings/keys', reasoning: false, note: 'Claude models with your own API key.' },
+  { id: 'openai', name: 'OpenAI', kind: 'cloud', wire: 'openai-chat', baseUrl: 'https://api.openai.com/v1', auth: 'bearer', keyUrl: 'https://platform.openai.com/api-keys', maxTokensField: 'max_completion_tokens', reasoning: true },
+  { id: 'openrouter', name: 'OpenRouter', kind: 'cloud', wire: 'openai-chat', baseUrl: 'https://openrouter.ai/api/v1', auth: 'bearer', keyUrl: 'https://openrouter.ai/keys', reasoning: true, note: 'Hundreds of models behind one key.' },
+  { id: 'google', name: 'Google Gemini', kind: 'cloud', wire: 'openai-chat', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', auth: 'bearer', reasoning: true },
+  { id: 'xai', name: 'xAI', kind: 'cloud', wire: 'openai-chat', baseUrl: 'https://api.x.ai/v1', auth: 'bearer', reasoning: false },
+  { id: 'groq', name: 'Groq', kind: 'cloud', wire: 'openai-chat', baseUrl: 'https://api.groq.com/openai/v1', auth: 'bearer', reasoning: false },
+  { id: 'deepseek', name: 'DeepSeek', kind: 'cloud', wire: 'anthropic', baseUrl: 'https://api.deepseek.com/anthropic', auth: 'bearer', reasoning: false },
+  { id: 'mistral', name: 'Mistral', kind: 'cloud', wire: 'openai-chat', baseUrl: 'https://api.mistral.ai/v1', auth: 'bearer', reasoning: false },
+  { id: 'ollama', name: 'Ollama', kind: 'local', wire: 'openai-chat', baseUrl: 'http://127.0.0.1:11434/v1', auth: 'none', reasoning: false },
+  { id: 'lmstudio', name: 'LM Studio', kind: 'local', wire: 'openai-chat', baseUrl: 'http://127.0.0.1:1234/v1', auth: 'none', reasoning: false },
+  { id: 'llamacpp', name: 'llama.cpp', kind: 'local', wire: 'openai-chat', baseUrl: 'http://127.0.0.1:8080/v1', auth: 'none', reasoning: false },
+  { id: 'custom-openai', name: 'Custom (OpenAI-compatible)', kind: 'custom', wire: 'openai-chat', baseUrl: '', auth: 'bearer', reasoning: false },
+  { id: 'custom-anthropic', name: 'Custom (Anthropic-compatible)', kind: 'custom', wire: 'anthropic', baseUrl: '', auth: 'apiKey', reasoning: false },
+];
+const ROUTER_MODELS: ModelInfo[] = [
+  { id: 'qwen/qwen3-coder', name: 'Qwen3 Coder', context: 262144, inputPrice: 0.2, outputPrice: 0.8, tools: true, reasoning: false, vision: false },
+  { id: 'google/gemini-2.5-flash', name: 'Gemini 2.5 Flash', context: 1048576, inputPrice: 0.3, outputPrice: 2.5, tools: true, reasoning: true, vision: true },
+  { id: 'deepseek/deepseek-r1', name: 'DeepSeek R1', context: 163840, inputPrice: 0.4, outputPrice: 1.75, tools: false, reasoning: true, vision: false },
+  { id: 'moonshotai/kimi-k2', name: 'Kimi K2', context: 131072, inputPrice: 0.14, outputPrice: 2.49, tools: true, reasoning: false, vision: false },
+];
+
 export function mockBackend(): Backend {
   let emit: (b: Envelope[]) => void = () => {};
   const send = (session: string, events: SessionEvent[], gap = 40) =>
@@ -162,6 +183,16 @@ export function mockBackend(): Backend {
       tooLargeOrBinary: false,
     }),
     window_action: () => false,
+    provider_catalog: () => PRESETS,
+    providers_detect: () => [{ preset: 'ollama', name: 'Ollama', baseUrl: 'http://127.0.0.1:11434/v1', models: ['qwen3-coder:30b', 'gpt-oss:20b', 'llama3.2:3b'] }],
+    provider_check: ({ profile, key }) => {
+      if (profile.auth !== 'none' && !key && !profile.hasKey) throw new Error('the provider refused the key (401)');
+      if (profile.preset === 'ollama') return [{ id: 'qwen3-coder:30b' }, { id: 'gpt-oss:20b' }, { id: 'llama3.2:3b' }];
+      return ROUTER_MODELS;
+    },
+    provider_models: ({ id }) => (id === 'openrouter' ? ROUTER_MODELS : [{ id: 'qwen3-coder:30b' }, { id: 'gpt-oss:20b' }]),
+    profile_key: () => {},
+    open_url: () => {},
     cc_settings_get: () => structuredClone(cc),
     cc_settings_set: ({ scope, key, value }: { scope: Scope; key: string; value: unknown }) => {
       if (/^env\.(NODE_OPTIONS|PATH|LD_PRELOAD)$/i.test(key)) throw new Error(`${key.slice(4)} can make tools run other code, so Forge does not set it`);

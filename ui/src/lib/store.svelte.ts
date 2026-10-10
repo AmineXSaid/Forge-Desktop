@@ -3,7 +3,7 @@
 // a streamed delta re-renders only the block it lands in.
 
 import { SvelteMap } from 'svelte/reactivity';
-import { call, type Envelope, type GitStatus, type Info, type Launch, type SessionEvent, type Settings, type Summary, type Thinking } from './ipc';
+import { call, type Envelope, type GitStatus, type Info, type Launch, type ModelInfo, type SessionEvent, type Settings, type Summary, type Thinking } from './ipc';
 
 export type Item =
   | { kind: 'user'; key: string; text: string }
@@ -62,6 +62,8 @@ export class SessionState {
   state = $state<'cold' | 'warming' | 'ready' | 'running' | 'needsYou'>('cold');
   context = $state<{ used: number; max: number; percent: number } | null>(null);
   thinking = $state<Thinking>('auto');
+  /** The provider: a profile id, '' for the Claude account, null for the default. */
+  route = $state<string | null>(null);
   /** A title to save once the transcript exists (a fork's "Fork of …"). */
   saveTitle: string | null = null;
   stopping = false;
@@ -306,7 +308,37 @@ class App {
   }
 
   launch(s: SessionState): Launch {
-    return { model: s.modelChoice, mode: s.mode, thinking: s.thinking };
+    return { model: s.modelChoice, mode: s.mode, thinking: s.thinking, route: s.route };
+  }
+
+  /** Models each connected provider offers, fetched when the picker opens. */
+  providerModels = $state<Record<string, ModelInfo[]>>({});
+  pickerOpen = $state(false);
+
+  async loadModels(id: string, refresh = false) {
+    if (this.providerModels[id] && !refresh) return;
+    try { this.providerModels[id] = await call('provider_models', { id, refresh }); } catch (e) { this.providerModels[id] = []; console.error(e); }
+  }
+
+  /** The route a session uses: its own choice, else the default (Settings → Providers). */
+  routeOf(s: SessionState | null): string {
+    return s?.route ?? this.settings?.activeProfile ?? '';
+  }
+
+  /** Pick a model, maybe on another provider. Within a provider it switches
+   * at once; across providers the CLI restarts on the same transcript. */
+  async pickModel(s: SessionState, route: string, model: string) {
+    const before = this.routeOf(s);
+    s.route = route;
+    s.modelChoice = model;
+    if (!s.running) return;
+    try {
+      if (route === before) await call('session_configure', { id: s.id, mode: null, model: route ? `${route}/${model}` : model });
+      else await call('session_prewarm', { id: s.id, launch: this.launch(s) });
+    } catch (e) {
+      s.route = before;
+      toast(String(e), 'error');
+    }
   }
 
   /** Start the CLI before it is needed: the composer got focus, or a session opened. */
