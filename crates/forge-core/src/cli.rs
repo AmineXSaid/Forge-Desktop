@@ -21,8 +21,9 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 
@@ -43,11 +44,48 @@ pub struct Options {
     pub session_id: String,
     /// Continue a saved conversation instead of starting one with this id.
     pub resume: bool,
+    /// Start this id as a copy of another saved conversation (`--fork-session`).
+    pub fork_from: Option<String>,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
     pub env: Vec<(String, String)>,
     /// Inherited variables to drop before `env` applies.
     pub env_remove: Vec<String>,
+    /// `set_max_thinking_tokens` after start: None leaves the CLI's default.
+    pub thinking: Option<Thinking>,
+    /// Ask the CLI for a title after the first turn (it saves it as `ai-title`).
+    pub want_title: bool,
+}
+
+/// Thinking budgets offered in the composer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Thinking {
+    Off,
+    Low,
+    Medium,
+    High,
+}
+
+impl Thinking {
+    /// "auto" is None: the CLI's own default.
+    pub fn parse(level: &str) -> Result<Option<Thinking>, String> {
+        Ok(Some(match level {
+            "auto" => return Ok(None),
+            "off" => Thinking::Off,
+            "low" => Thinking::Low,
+            "medium" => Thinking::Medium,
+            "high" => Thinking::High,
+            _ => return Err("unknown thinking level".into()),
+        }))
+    }
+    pub fn tokens(self) -> u32 {
+        match self {
+            Thinking::Off => 0,
+            Thinking::Low => 4_000,
+            Thinking::Medium => 10_000,
+            Thinking::High => 32_000,
+        }
+    }
 }
 
 /// What the window decided about one permission prompt.
@@ -68,6 +106,8 @@ struct Pending {
     suggestions: Value,
 }
 
+type Waiter = mpsc::Sender<Result<Value, String>>;
+
 pub struct Session {
     pub id: String,
     stdin: Mutex<Option<ChildStdin>>,
@@ -75,6 +115,18 @@ pub struct Session {
     pending: Mutex<HashMap<String, Pending>>,
     next_request: AtomicU64,
     normalizer: Mutex<Normalizer>,
+    /// Our control requests that someone waits on, by request id.
+    waiters: Mutex<HashMap<String, Waiter>>,
+    /// Between a message and the end of its turn.
+    busy: AtomicBool,
+    last_active: Mutex<Instant>,
+    /// Set by `stop`: the exit that follows is no error.
+    stopping: AtomicBool,
+    /// The first message, for the title; taken once the title is asked for.
+    title_from: Mutex<Option<String>>,
+    want_title: AtomicBool,
+    sink: Sink,
+    me: Mutex<Weak<Session>>,
 }
 
 /// `claude` on this machine: `$FORGE_CLAUDE`, else PATH, else the places the
@@ -116,7 +168,9 @@ pub fn args(opts: &Options) -> Vec<String> {
     .iter()
     .map(|s| s.to_string())
     .collect();
-    if opts.resume {
+    if let Some(from) = &opts.fork_from {
+        args.extend(["--resume".into(), from.clone(), "--fork-session".into(), "--session-id".into(), opts.session_id.clone()]);
+    } else if opts.resume {
         args.extend(["--resume".into(), opts.session_id.clone()]);
     } else {
         args.extend(["--session-id".into(), opts.session_id.clone()]);
@@ -142,7 +196,7 @@ pub fn valid_model(model: &str) -> bool {
 
 impl Session {
     pub fn start(opts: Options, sink: Sink) -> Result<Arc<Session>, String> {
-        if !valid_session_id(&opts.session_id) {
+        if !valid_session_id(&opts.session_id) || opts.fork_from.as_deref().is_some_and(|f| !valid_session_id(f)) {
             return Err("bad session id".into());
         }
         let mut command = Command::new(&opts.binary);
@@ -178,7 +232,17 @@ impl Session {
             pending: Mutex::new(HashMap::new()),
             next_request: AtomicU64::new(1),
             normalizer: Mutex::new(Normalizer::default()),
+            waiters: Mutex::new(HashMap::new()),
+            busy: AtomicBool::new(false),
+            last_active: Mutex::new(Instant::now()),
+            stopping: AtomicBool::new(false),
+            title_from: Mutex::new(None),
+            want_title: AtomicBool::new(opts.want_title),
+            sink: sink.clone(),
+            me: Mutex::new(Weak::new()),
         });
+        *session.me.lock().unwrap() = Arc::downgrade(&session);
+        session.emit(&sink, SessionEvent::State { state: "warming".into() });
 
         let tail = Arc::new(Mutex::new(Vec::<String>::new()));
         {
@@ -204,12 +268,20 @@ impl Session {
                 }
                 let code = session.child.lock().unwrap().as_mut().and_then(|c| c.wait().ok()).and_then(|s| s.code());
                 session.pending.lock().unwrap().clear();
+                for (_, w) in session.waiters.lock().unwrap().drain() {
+                    let _ = w.send(Err("the session has ended".into()));
+                }
+                session.busy.store(false, Ordering::Relaxed);
                 let stderr = tail.lock().unwrap().join("\n");
-                log::write("info", &format!("session {} exited ({code:?})", session.id));
-                session.emit(&sink, SessionEvent::Exited { code, stderr });
+                let expected = session.stopping.load(Ordering::Relaxed);
+                log::write("info", &format!("session {} exited ({code:?}{})", session.id, if expected { ", stopped by Forge" } else { "" }));
+                session.emit(&sink, SessionEvent::Exited { code, stderr, expected });
             });
         }
         session.request("initialize", json!({}))?;
+        if let Some(t) = opts.thinking {
+            session.set_thinking(Some(t))?;
+        }
         Ok(session)
     }
 
@@ -226,6 +298,18 @@ impl Session {
             Some("control_request") => self.on_control_request(&event, sink),
             Some("control_response") => {
                 let response = event.get("response").cloned().unwrap_or(Value::Null);
+                let id = response.get("request_id").and_then(Value::as_str).unwrap_or_default();
+                if let Some(w) = self.waiters.lock().unwrap().remove(id) {
+                    let _ = w.send(match response.get("subtype").and_then(Value::as_str) {
+                        Some("error") => Err(response.get("error").and_then(Value::as_str).unwrap_or("the CLI refused").to_string()),
+                        _ => Ok(response.get("response").cloned().unwrap_or(Value::Null)),
+                    });
+                    return;
+                }
+                if id == "fd-1" {
+                    // The answer to `initialize`: the process is ready for a message.
+                    self.emit(sink, SessionEvent::State { state: if self.busy.load(Ordering::Relaxed) { "running" } else { "ready" }.into() });
+                }
                 if response.get("subtype").and_then(Value::as_str) == Some("error") {
                     log::write("warn", &format!("{}: control request failed: {}", self.id, response));
                 } else if let Some(r) = response.get("response").filter(|r| r.get("models").is_some() || r.get("commands").is_some()) {
@@ -244,7 +328,11 @@ impl Session {
             Some(_) => {
                 let events = self.normalizer.lock().unwrap().feed(&Value::Object(event));
                 for e in events {
+                    let turn_end = matches!(e, SessionEvent::TurnEnd { .. });
                     self.emit(sink, e);
+                    if turn_end {
+                        self.after_turn();
+                    }
                 }
             }
             None => log::write("cli-stdout", line),
@@ -262,6 +350,7 @@ impl Session {
                 log::write("info", &format!("{}: asks to use {tool} ({request_id})", self.id));
                 // Recorded before the window hears of it, so an instant answer finds it.
                 self.pending.lock().unwrap().insert(request_id.clone(), Pending { tool: tool.clone(), input: input.clone(), suggestions: suggestions.clone() });
+                self.emit(sink, SessionEvent::State { state: "needsYou".into() });
                 self.emit(sink, SessionEvent::Permission {
                     request_id,
                     tool,
@@ -290,10 +379,60 @@ impl Session {
     }
 
     fn request(&self, subtype: &str, fields: Value) -> Result<(), String> {
-        let id = format!("fd-{}", self.next_request.fetch_add(1, Ordering::Relaxed));
+        self.request_with_id(subtype, fields).map(|_| ())
+    }
+
+    fn request_with_id(&self, subtype: &str, fields: Value) -> Result<String, String> {
+        let id = self.next_id();
+        self.write_request(&id, subtype, fields)?;
+        Ok(id)
+    }
+
+    fn next_id(&self) -> String {
+        format!("fd-{}", self.next_request.fetch_add(1, Ordering::Relaxed))
+    }
+
+    fn write_request(&self, id: &str, subtype: &str, fields: Value) -> Result<(), String> {
         let mut request = fields.as_object().cloned().unwrap_or_default();
         request.insert("subtype".into(), json!(subtype));
         self.write(&json!({"type": "control_request", "request_id": id, "request": request}))
+    }
+
+    /// A control request and its answer. Blocks: never call it on the reader thread.
+    pub fn call(&self, subtype: &str, fields: Value, timeout: Duration) -> Result<Value, String> {
+        let (tx, rx) = mpsc::channel();
+        let id = self.next_id();
+        // Registered before it is written, so an instant answer finds it.
+        self.waiters.lock().unwrap().insert(id.clone(), tx);
+        if let Err(e) = self.write_request(&id, subtype, fields) {
+            self.waiters.lock().unwrap().remove(&id);
+            return Err(e);
+        }
+        let answer = rx.recv_timeout(timeout);
+        self.waiters.lock().unwrap().remove(&id);
+        answer.map_err(|_| format!("{subtype}: no answer from the CLI"))?
+    }
+
+    /// After a turn: how full the context is, and (once) a title. On its own
+    /// thread, since the answers arrive on the reader thread this runs from.
+    fn after_turn(&self) {
+        self.busy.store(false, Ordering::Relaxed);
+        self.touch();
+        self.emit(&self.sink, SessionEvent::State { state: "ready".into() });
+        let Some(me) = self.myself() else { return };
+        std::thread::spawn(move || {
+            if let Ok((used, max, percent)) = me.context_usage() {
+                me.emit(&me.sink, SessionEvent::Context { used, max, percent });
+            }
+            let description = me.want_title.swap(false, Ordering::Relaxed).then(|| me.title_from.lock().unwrap().take()).flatten();
+            if let Some(d) = description {
+                match me.generate_title(&d) {
+                    Ok(Some(title)) => me.emit(&me.sink, SessionEvent::Title { title }),
+                    Ok(None) => {}
+                    Err(e) => log::write("warn", &format!("{}: no title: {e}", me.id)),
+                }
+            }
+        });
     }
 
     pub fn send(&self, text: &str) -> Result<(), String> {
@@ -308,7 +447,57 @@ impl Session {
             "message": {"role": "user", "content": text},
             "parent_tool_use_id": null,
             "session_id": self.id,
-        }))
+        }))?;
+        {
+            let mut first = self.title_from.lock().unwrap();
+            if first.is_none() && self.want_title.load(Ordering::Relaxed) {
+                *first = Some(text.chars().take(2000).collect());
+            }
+        }
+        self.busy.store(true, Ordering::Relaxed);
+        self.touch();
+        self.emit(&self.sink, SessionEvent::State { state: "running".into() });
+        Ok(())
+    }
+
+    pub fn set_thinking(&self, level: Option<Thinking>) -> Result<(), String> {
+        self.request("set_max_thinking_tokens", json!({"max_thinking_tokens": level.map(Thinking::tokens)}))
+    }
+
+    /// Tokens in the context now, the window's size, and the percentage used.
+    pub fn context_usage(&self) -> Result<(u64, u64, f64), String> {
+        let r = self.call("get_context_usage", json!({"detail": "summary"}), Duration::from_secs(20))?;
+        let used = r.get("totalTokens").and_then(Value::as_u64).ok_or("no context usage")?;
+        let max = r.get("maxTokens").and_then(Value::as_u64).ok_or("no context size")?;
+        let percent = r.get("percentage").and_then(Value::as_f64).unwrap_or(if max > 0 { used as f64 * 100.0 / max as f64 } else { 0.0 });
+        Ok((used, max, percent))
+    }
+
+    /// The CLI names the session from its first message and saves the title
+    /// in the transcript (`ai-title`), where the terminal sees it too.
+    pub fn generate_title(&self, description: &str) -> Result<Option<String>, String> {
+        let r = self.call("generate_session_title", json!({"description": description, "persist": true}), Duration::from_secs(60))?;
+        Ok(r.get("title").and_then(Value::as_str).map(str::trim).filter(|t| !t.is_empty()).map(|t| t.chars().take(120).collect()))
+    }
+
+    fn myself(&self) -> Option<Arc<Session>> {
+        self.me.lock().unwrap().upgrade()
+    }
+
+    fn touch(&self) {
+        *self.last_active.lock().unwrap() = Instant::now();
+    }
+
+    pub fn idle_for(&self) -> Duration {
+        self.last_active.lock().unwrap().elapsed()
+    }
+
+    pub fn is_busy(&self) -> bool {
+        self.busy.load(Ordering::Relaxed)
+    }
+
+    pub fn needs_you(&self) -> bool {
+        !self.pending.lock().unwrap().is_empty()
     }
 
     pub fn interrupt(&self) -> Result<(), String> {
@@ -332,6 +521,7 @@ impl Session {
     /// Answer a permission prompt the CLI is waiting on.
     pub fn respond(&self, request_id: &str, decision: Decision) -> Result<(), String> {
         let pending = self.pending.lock().unwrap().remove(request_id).ok_or("no such prompt is waiting")?;
+        self.touch();
         log::write("info", &format!("{}: {} answered: {}", self.id, pending.tool, match &decision {
             Decision::Allow => "allow",
             Decision::AllowAlways => "allow always",
@@ -346,7 +536,11 @@ impl Session {
                 return Err(e);
             }
         };
-        self.write(&json!({"type": "control_response", "response": {"subtype": "success", "request_id": request_id, "response": response}}))
+        self.write(&json!({"type": "control_response", "response": {"subtype": "success", "request_id": request_id, "response": response}}))?;
+        if !self.needs_you() {
+            self.emit(&self.sink, SessionEvent::State { state: if self.is_busy() { "running" } else { "ready" }.into() });
+        }
+        Ok(())
     }
 
     pub fn is_running(&self) -> bool {
@@ -356,6 +550,7 @@ impl Session {
 
     /// Close stdin (the CLI's signal to finish), then make sure it is gone.
     pub fn stop(&self) {
+        self.stopping.store(true, Ordering::Relaxed);
         self.stdin.lock().unwrap().take();
         if let Some(mut child) = self.child.lock().unwrap().take() {
             for _ in 0..10 {
@@ -444,10 +639,13 @@ mod tests {
             cwd: ".".into(),
             session_id: "0e5b8a1c-1111-4222-8333-444455556666".into(),
             resume: false,
+            fork_from: None,
             model: Some("sonnet".into()),
             permission_mode: Some("plan".into()),
             env: vec![],
             env_remove: vec![],
+            thinking: None,
+            want_title: false,
         };
         let a = args(&o);
         assert!(a.windows(2).any(|w| w == ["--session-id", "0e5b8a1c-1111-4222-8333-444455556666"]));
@@ -456,6 +654,12 @@ mod tests {
         assert!(a.windows(2).any(|w| w == ["--permission-mode", "plan"]));
         o.resume = true;
         assert!(args(&o).windows(2).any(|w| w == ["--resume", "0e5b8a1c-1111-4222-8333-444455556666"]));
+        o.fork_from = Some("11111111-2222-4333-8444-555566667777".into());
+        let f = args(&o).join(" ");
+        assert!(f.contains("--resume 11111111-2222-4333-8444-555566667777 --fork-session --session-id 0e5b8a1c-1111-4222-8333-444455556666"), "{f}");
+        assert_eq!(Thinking::parse("auto").unwrap(), None);
+        assert_eq!(Thinking::parse("high").unwrap().map(Thinking::tokens), Some(32_000));
+        assert!(Thinking::parse("ultra").is_err());
     }
 
     #[test]
@@ -500,5 +704,15 @@ mod tests {
     fn project_folder_names() {
         assert_eq!(project_slug(Path::new("/tmp/claude-0/-home/ws")), "-tmp-claude-0--home-ws");
         assert_eq!(project_slug(Path::new(r"C:\dev\my.app")), "C--dev-my-app");
+    }
+}
+
+/// Tests that change process-wide environment variables take this lock.
+#[cfg(test)]
+pub(crate) mod tests_env {
+    use std::sync::{Mutex, MutexGuard};
+    static LOCK: Mutex<()> = Mutex::new(());
+    pub fn lock() -> MutexGuard<'static, ()> {
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 }

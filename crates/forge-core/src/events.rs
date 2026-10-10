@@ -46,7 +46,18 @@ pub enum SessionEvent {
         models: Value,
         commands: Value,
     },
-    Exited { code: Option<i32>, stderr: String },
+    /// The process's lifecycle: "warming" (spawned), "ready", "running",
+    /// "needsYou" (a prompt waits). A reaped session exits with `expected`.
+    State { state: String },
+    /// How full the context window is, after each turn.
+    Context { used: u64, max: u64, percent: f64 },
+    /// A title the CLI generated; it is also saved in the transcript.
+    Title { title: String },
+    /// Not one session's: the project's saved sessions changed on disk
+    /// (sent with an empty session id).
+    SessionsChanged,
+    /// `expected`: Forge stopped it (closed, reaped, replaced), so it is no error.
+    Exited { code: Option<i32>, stderr: String, expected: bool },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

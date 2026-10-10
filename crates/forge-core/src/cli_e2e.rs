@@ -58,11 +58,16 @@ fn prompt_allow_write_save_and_resume() {
     let ws = ws.canonicalize().unwrap();
     let config = home.join(".claude");
 
+    const FIRST: &str = "6f1d3c2a-0b9e-4c11-8a7d-2e5f9b0c1d42";
+    const FORK: &str = "7a2e4d3b-1c0f-4d22-9b8e-3f6a0c1d2e53";
     let options = |resume: bool| Options {
         binary: binary.clone(),
         cwd: ws.clone(),
-        session_id: "6f1d3c2a-0b9e-4c11-8a7d-2e5f9b0c1d42".into(),
+        session_id: FIRST.into(),
         resume,
+        fork_from: None,
+        thinking: None,
+        want_title: !resume,
         model: Some("claude-sonnet-4-5".into()),
         permission_mode: Some("default".into()),
         env: vec![
@@ -95,13 +100,21 @@ fn prompt_allow_write_save_and_resume() {
     wait_for(&rx, "the file's tool result", |e| matches!(e, SessionEvent::ToolResult { is_error: false, .. }));
     wait_for(&rx, "the end of the turn", is_turn_end);
     assert_eq!(std::fs::read_to_string(ws.join("hello.txt")).unwrap(), "hello\n");
+    // After the turn: how full the context is, and a title the CLI saves.
+    let SessionEvent::Context { used, max, .. } = wait_for(&rx, "the context usage", |e| matches!(e, SessionEvent::Context { .. })) else { unreachable!() };
+    assert!(used > 0 && max >= used, "{used} of {max}");
+    let SessionEvent::Title { title } = wait_for(&rx, "the generated title", |e| matches!(e, SessionEvent::Title { .. })) else { unreachable!() };
+    assert!(title.starts_with("Stub: write hello in"), "{title}");
+    assert!(!s.is_busy() && !s.needs_you());
     s.stop();
+    let exited = wait_for(&rx, "the exit", |e| matches!(e, SessionEvent::Exited { .. }));
+    assert!(matches!(exited, SessionEvent::Exited { expected: true, .. }), "stopping is no error: {exited:?}");
 
     // 2. Saved where the sidebar looks, with the first message as its title.
     let file = config.join("projects").join(project_slug(&ws)).join("6f1d3c2a-0b9e-4c11-8a7d-2e5f9b0c1d42.jsonl");
     let text = std::fs::read_to_string(&file).expect("the conversation is saved under the project's folder");
-    let summary = sessions::summarize("6f1d3c2a-0b9e-4c11-8a7d-2e5f9b0c1d42", &text, std::time::SystemTime::now()).unwrap();
-    assert!(summary.title.starts_with("write hello in"));
+    let summary = sessions::summarize(FIRST, &text, std::time::SystemTime::now()).unwrap();
+    assert!(summary.title.starts_with("Stub: write hello in"), "the generated title names it: {}", summary.title);
     let before = sessions::load(&file).unwrap().len();
     assert!(before >= 4, "user, assistant text, tool use, tool result: {before}");
 
@@ -110,7 +123,7 @@ fn prompt_allow_write_save_and_resume() {
     let sink: Sink = Arc::new(move |e| {
         let _ = tx.send(e);
     });
-    let s = Session::start(options(true), sink).unwrap();
+    let s = Session::start(Options { thinking: Some(crate::cli::Thinking::Low), ..options(true) }, sink).unwrap();
     s.send("hi again").unwrap();
     wait_for(&rx, "the resumed CLI", |e| matches!(e, SessionEvent::Started { .. }));
     wait_for(&rx, "the resumed reply", |e| matches!(e, SessionEvent::TextDelta { text, .. } if text.contains("Hello from the stub")));
@@ -122,5 +135,24 @@ fn prompt_allow_write_save_and_resume() {
     let replayed = crate::events::replay(&after);
     assert!(matches!(&replayed[0], SessionEvent::User { text } if text.starts_with("write hello in")));
     assert!(replayed.iter().any(|e| matches!(e, SessionEvent::Tool { name, done: true, .. } if name == "Write")));
+
+    // 4. A fork: a new id that starts from a copy of the conversation; the original is untouched.
+    let (tx, rx) = mpsc::channel::<Envelope>();
+    let sink: Sink = Arc::new(move |e| {
+        let _ = tx.send(e);
+    });
+    let s = Session::start(Options { session_id: FORK.into(), fork_from: Some(FIRST.into()), want_title: false, ..options(false) }, sink).unwrap();
+    s.send("on the fork").unwrap();
+    wait_for(&rx, "the fork's turn", is_turn_end);
+    // 5. Reaping: an idle session's process is stopped, and that is no error.
+    let manager = crate::session_manager::Manager::new(crate::session_manager::Limits { idle: std::time::Duration::ZERO, max_live: 6 });
+    manager.insert(s.clone());
+    assert!(manager.get(FORK).is_none(), "an idle session past the limit is reaped");
+    let exited = wait_for(&rx, "the reaped exit", |e| matches!(e, SessionEvent::Exited { .. }));
+    assert!(matches!(exited, SessionEvent::Exited { expected: true, .. }), "{exited:?}");
+    let forked = sessions::load(&file.with_file_name(format!("{FORK}.jsonl"))).expect("the fork is saved under its own id");
+    assert!(forked.iter().any(|m| m["content"] == "hi again"), "the fork has the history");
+    assert!(forked.iter().any(|m| m["content"] == "on the fork"));
+    assert!(!sessions::load(&file).unwrap().iter().any(|m| m["content"] == "on the fork"), "the original is untouched");
     let _ = std::fs::remove_dir_all(&root);
 }

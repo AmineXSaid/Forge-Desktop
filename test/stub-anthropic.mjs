@@ -6,6 +6,8 @@
 // - a user prompt "fix the greeting in <file>" answers with an Edit of that
 //   file ("Hello, world" to "Hello, Forge");
 // - a tool result answers "Done." (after an Edit: a short markdown summary);
+// - a session-title request (a JSON schema asking for `title`) answers
+//   {"title": "Stub: <the session's first line>"};
 // - anything else answers "Hello from the stub."
 //
 // `node test/stub-anthropic.mjs` prints `listening <port>` and serves until killed.
@@ -73,6 +75,11 @@ const EDIT_SUMMARY = [
 
 function reply(body) {
 	const model = body.model ?? 'stub-model';
+	if (body.output_config?.format?.schema?.properties?.title) {
+		const said = textOf(body.messages?.at(-1)?.content);
+		const first = (said.match(/<session>\n?([^\n]*)/)?.[1] ?? said).trim().slice(0, 40);
+		return textEvents(model, JSON.stringify({ title: `Stub: ${first}` }));
+	}
 	// The CLI may add its own context after the person's turn: read the last *user* message.
 	const messages = body.messages ?? [];
 	const at = messages.findLastIndex((m) => m.role === 'user');

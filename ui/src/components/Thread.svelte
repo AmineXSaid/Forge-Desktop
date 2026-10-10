@@ -86,7 +86,8 @@
           {:else if it.kind === 'permission'}
             <AskCard item={it} {session} />
           {:else if it.kind === 'notice'}
-            <div class="notice {it.tone}"><Icon name={it.tone === 'error' || it.tone === 'warn' ? 'alert' : 'info'} size={14} /><div>{it.text}{#if it.detail}<pre>{it.detail}</pre>{/if}</div></div>
+            <div class="notice {it.tone}"><Icon name={it.tone === 'error' || it.tone === 'warn' ? 'alert' : 'info'} size={14} /><div class="nt">{it.text}{#if it.detail}<pre>{it.detail}</pre>{/if}</div>
+              {#if it.resume && !session.running}<button class="btn sm outline resume" onclick={() => { session.failed = false; app.prewarm(); }}><Icon name="refresh" size={13} />Resume</button>{/if}</div>
           {:else if it.kind === 'meta'}
             <div class="meta">{((it.durationMs ?? 0) / 1000).toFixed(1)}s{#if it.costUsd}<span class="dot">·</span>${it.costUsd.toFixed(4)}{/if}</div>
           {/if}
@@ -125,6 +126,8 @@
   .notice.error { background: var(--status-error-bg); color: var(--status-error-fg); }
   .notice.warn { background: var(--status-needs-bg); color: var(--status-needs-fg); }
   .notice :global(.icon) { margin-top: 2px; }
+  .notice .nt { flex: 1; min-width: 0; }
+  .notice .resume { flex: none; color: var(--ink); margin: -4px -6px -4px 0; }
   .notice pre { margin: 6px 0 0; white-space: pre-wrap; font: 12px/1.5 var(--font-mono); }
   .meta { font-size: 12px; color: var(--ink-4); margin-top: -8px; }
   .meta .dot { margin: 0 6px; }

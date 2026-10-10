@@ -45,6 +45,7 @@ pub(crate) fn open_project(app: &AppHandle, folder: PathBuf) {
         let name = folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| folder.display().to_string());
         let _ = window.set_title(&format!("{name} — Forge"));
     }
+    app.state::<AppState>().watch_project(app, &folder);
     *app.state::<AppState>().project.lock().unwrap() = Some(folder);
 }
 
@@ -93,6 +94,11 @@ pub fn run() {
             desktop::sessions_list,
             desktop::session_load,
             desktop::session_new,
+            desktop::session_prewarm,
+            desktop::session_fork,
+            desktop::session_pin,
+            desktop::session_focus,
+            desktop::sessions_search,
             desktop::session_send,
             desktop::session_respond,
             desktop::session_interrupt,
@@ -124,6 +130,9 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             forge_core::log::init(&log_dir_for(&handle));
+            if let Ok(dirs) = paths::dirs(&handle) {
+                handle.state::<AppState>().init(&dirs.data);
+            }
             paths::log("info", &format!("Forge Desktop {} starting", handle.package_info().version));
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Forge")

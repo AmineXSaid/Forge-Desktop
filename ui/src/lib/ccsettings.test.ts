@@ -7,6 +7,7 @@ const all: CcSettings = {
   project: { model: 'sonnet', permissions: { allow: ['Bash(npm test)'], deny: ['Bash(rm:*)'] }, env: { B: 'p' } },
   local: { sandbox: { enabled: true }, env: { C: 'l' } },
   hasProject: true,
+  trusted: true,
   errors: [],
 };
 

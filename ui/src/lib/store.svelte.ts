@@ -3,7 +3,7 @@
 // a streamed delta re-renders only the block it lands in.
 
 import { SvelteMap } from 'svelte/reactivity';
-import { call, type Envelope, type GitStatus, type Info, type SessionEvent, type Settings, type Summary } from './ipc';
+import { call, type Envelope, type GitStatus, type Info, type Launch, type SessionEvent, type Settings, type Summary, type Thinking } from './ipc';
 
 export type Item =
   | { kind: 'user'; key: string; text: string }
@@ -22,10 +22,18 @@ export type Item =
       verdict: string;
       answers: Record<string, string[]>;
     }
-  | { kind: 'notice'; key: string; tone: string; text: string; detail?: string }
+  | { kind: 'notice'; key: string; tone: string; text: string; detail?: string; resume?: boolean }
   | { kind: 'meta'; key: string; durationMs: number | null; costUsd: number | null };
 
 export type Status = 'idle' | 'working' | 'needs' | 'error';
+
+export const THINKING: { id: Thinking; label: string; desc: string }[] = [
+  { id: 'auto', label: 'Auto', desc: "Claude Code's default" },
+  { id: 'off', label: 'Off', desc: 'No extended thinking' },
+  { id: 'low', label: 'Think', desc: 'Up to 4k tokens' },
+  { id: 'medium', label: 'Think hard', desc: 'Up to 10k tokens' },
+  { id: 'high', label: 'Think harder', desc: 'Up to 32k tokens' },
+];
 
 export const MODES = [
   { id: 'default', label: 'Ask before acting', short: 'Ask', desc: 'Asks before editing files or running commands' },
@@ -50,6 +58,12 @@ export class SessionState {
   mode = $state('default');
   draft = $state('');
   title = $state<string | null>(null);
+  /** The process: 'cold' (none), then what the CLI reports. */
+  state = $state<'cold' | 'warming' | 'ready' | 'running' | 'needsYou'>('cold');
+  context = $state<{ used: number; max: number; percent: number } | null>(null);
+  thinking = $state<Thinking>('auto');
+  /** A title to save once the transcript exists (a fork's "Fork of …"). */
+  saveTitle: string | null = null;
   stopping = false;
   // Lookups into `items` (the same proxied objects), not reactive themselves.
   private blocks = new Map<string, Extract<Item, { kind: 'text' | 'thinking' }>>();
@@ -150,6 +164,11 @@ export class SessionState {
         break;
       }
       case 'turnEnd':
+        if (this.saveTitle) {
+          const title = this.saveTitle;
+          this.saveTitle = null;
+          call('session_rename', { id: this.id, title }).then(() => app.refreshList()).catch((err) => console.error(err));
+        }
         this.busy = false;
         this.finishLive();
         if (!e.ok) {
@@ -162,22 +181,44 @@ export class SessionState {
       case 'notice':
         this.push({ kind: 'notice', key: key(), tone: e.tone, text: e.text });
         break;
+      case 'state':
+        this.state = e.state;
+        this.running = true;
+        break;
+      case 'context':
+        this.context = { used: e.used, max: e.max, percent: e.percent };
+        break;
+      case 'title': {
+        this.title = e.title;
+        const row = app.list.find((r) => r.id === this.id);
+        if (row) row.title = e.title;
+        break;
+      }
+      case 'sessionsChanged':
+        break;
       case 'capabilities':
         app.capabilities(e.models, e.commands);
         break;
-      case 'exited':
+      case 'exited': {
+        const midTurn = this.busy;
         this.running = false;
         this.busy = false;
+        this.state = 'cold';
         this.finishLive();
         for (const i of this.items) {
           if (i.kind === 'permission' && i.state === 'open') { i.state = 'closed'; i.verdict = 'Session ended'; }
         }
-        if (e.code && !this.stopping) {
+        // Stopped by Forge (closed, idle, replaced): it sleeps, and the next message resumes it.
+        if (!e.expected && !this.stopping && (e.code || midTurn)) {
           this.failed = true;
-          this.push({ kind: 'notice', key: key(), tone: 'error', text: `Claude Code stopped (exit code ${e.code}).`, detail: e.stderr });
+          this.push({
+            kind: 'notice', key: key(), tone: 'error', resume: true, detail: e.stderr,
+            text: midTurn ? 'Claude Code stopped in the middle of a turn.' : `Claude Code stopped (exit code ${e.code}).`,
+          });
         }
         this.stopping = false;
         break;
+      }
     }
   }
 
@@ -203,6 +244,10 @@ class App {
   models = $state<Model[] | null>(null);
   commands = $state<{ name: string; description: string }[]>([]);
   search = $state('');
+  /** Sessions whose messages match the search (Rust's full-text search). */
+  searchHits = $state<string[]>([]);
+  /** A new session's id, reserved (and its CLI prewarmed) before its first message. */
+  draft: string | null = null;
   maximized = $state(false);
   dark = $state(false);
 
@@ -225,21 +270,80 @@ class App {
   }
 
   onBatch = (batch: Envelope[]) => {
-    for (const env of batch) this.session(env.session).apply(env.event);
-    if (batch.some((e) => e.event.kind === 'turnEnd')) {
-      this.refreshList();
-      this.refreshGit();
+    for (const env of batch) {
+      if (!env.session) continue;
+      this.session(env.session).apply(env.event);
+      if (env.event.kind === 'turnEnd' && env.session !== this.current) {
+        const row = this.list.find((r) => r.id === env.session);
+        if (row) row.unread = true;
+      }
     }
+    if (batch.some((e) => e.event.kind === 'turnEnd')) this.refreshGit();
+    if (batch.some((e) => e.event.kind === 'turnEnd' || e.event.kind === 'sessionsChanged')) this.refreshList();
   };
 
   /** Sessions in the sidebar: saved ones, plus ones started here that have no file yet. */
   get rows(): Summary[] {
     const rows = [...this.list];
     for (const s of this.sessions.values()) {
-      if (s.items.length && !rows.some((r) => r.id === s.id)) rows.unshift({ id: s.id, title: s.title ?? s.firstPrompt ?? 'New session', updated: Date.now(), branch: null });
+      if (s.items.length && !rows.some((r) => r.id === s.id)) {
+        rows.unshift({ id: s.id, title: s.title ?? s.firstPrompt ?? 'New session', updated: Date.now(), branch: null, named: !!s.title, pinned: false, unread: false });
+      }
     }
     const q = this.search.trim().toLowerCase();
-    return q ? rows.filter((r) => r.title.toLowerCase().includes(q)) : rows;
+    return q ? rows.filter((r) => r.title.toLowerCase().includes(q) || this.searchHits.includes(r.id)) : rows;
+  }
+
+  private searchTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Titles filter at once; message text is searched in Rust after a pause. */
+  searchFor(q: string) {
+    this.search = q;
+    clearTimeout(this.searchTimer);
+    if (q.trim().length < 2) { this.searchHits = []; return; }
+    this.searchTimer = setTimeout(async () => {
+      try { if (this.search === q) this.searchHits = await call('sessions_search', { query: q }); } catch (e) { console.error(e); }
+    }, 200);
+  }
+
+  launch(s: SessionState): Launch {
+    return { model: s.modelChoice, mode: s.mode, thinking: s.thinking };
+  }
+
+  /** Start the CLI before it is needed: the composer got focus, or a session opened. */
+  async prewarm() {
+    try {
+      if (this.current) {
+        const s = this.session(this.current);
+        if (!s.running) await call('session_prewarm', { id: s.id, launch: this.launch(s) });
+      } else {
+        if (!this.draft) this.draft = await call('session_new');
+        const s = this.session(this.draft);
+        if (!s.running) await call('session_prewarm', { id: s.id, launch: this.launch(s) });
+      }
+    } catch (e) { console.error('prewarm', e); }
+  }
+
+  async pin(id: string, pinned: boolean) {
+    try {
+      await call('session_pin', { id, pinned });
+      const row = this.list.find((r) => r.id === id);
+      if (row) row.pinned = pinned;
+    } catch (e) { toast(String(e), 'error'); }
+  }
+
+  /** A copy of a saved session that goes its own way from here. */
+  async fork(from: string) {
+    try {
+      const id = await call('session_fork', { from });
+      const source = this.list.find((r) => r.id === from)?.title ?? 'session';
+      const s = this.session(id);
+      s.title = s.saveTitle = `Fork of ${source}`;
+      for (const e of await call('session_load', { id: from })) s.apply(e);
+      s.loaded = 'yes';
+      this.current = id;
+      call('session_focus', { id }).catch(() => {});
+      toast('Forked. New messages go to the copy.');
+    } catch (e) { toast(String(e), 'error'); }
   }
 
   async refreshList() {
@@ -255,6 +359,9 @@ class App {
 
   async open(id: string) {
     this.current = id;
+    const row = this.list.find((r) => r.id === id);
+    if (row) row.unread = false;
+    call('session_focus', { id }).catch(() => {});
     const s = this.session(id);
     if (s.loaded === 'no' && !s.items.length) {
       s.loaded = 'loading';
@@ -267,18 +374,23 @@ class App {
 
   newSession() {
     this.current = null;
+    call('session_focus', { id: null }).catch(() => {});
   }
 
   async send(text: string) {
     const t = text.trim();
     if (!t) return;
-    if (!this.current) this.current = await call('session_new');
+    if (!this.current) {
+      this.current = this.draft ?? (await call('session_new'));
+      this.draft = null;
+      call('session_focus', { id: this.current }).catch(() => {});
+    }
     const s = this.session(this.current);
     s.loaded = 'yes';
     s.addUser(t);
     s.draft = '';
     try {
-      await call('session_send', { id: s.id, text: t, model: s.modelChoice, mode: s.mode });
+      await call('session_send', { id: s.id, text: t, launch: this.launch(s) });
     } catch (e) {
       s.busy = false;
       s.failed = true;

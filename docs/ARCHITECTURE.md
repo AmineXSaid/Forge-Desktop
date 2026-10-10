@@ -204,6 +204,16 @@ Everything else (sessions, providers, the UI, Windows integration) is Rust plus 
 | **M6** | Windows polish & ship | Toasts with actions, tray, updater, signed installer, log viewer, first-run onboarding. A clean Windows 11 VM goes from install to first chat in under 2 minutes. |
 | **M7** | Extensibility | MCP servers (`mcp_status` / `mcp_toggle` / `mcp_reconnect` / `mcp_authenticate`), skills, agents, hooks, memory (CLAUDE.md), worktree sessions for parallel agents. |
 
+### Status
+- **M2 (sessions), done on Linux:**
+  - `session_manager.rs`: one live CLI per session; the composer's focus prewarms it (a new session's id is reserved first), so the first message skips CLI start-up. The reaper stops Ready sessions idle for 10 minutes and keeps at most 6 live, least recently used first; running and needs-you sessions are never reaped. A reaped or replaced process exits as `expected` (it sleeps; the next message resumes it). An unexpected exit, or one mid-turn, shows Resume.
+  - `sessions.rs`: the index is saved in `session-index.json`; a grown file is read only from where the last read stopped, and only lines that can hold a title are parsed. 500 sessions list in about 6 ms warm or after a restart (debug build; the first-ever build of the index is about 270 ms). Titles: rename (`custom-title`) > generated (`ai-title`) > summary > first line. Full-text search over message text.
+  - `watch.rs` (`notify`): a session started in the terminal appears in the sidebar without a refresh.
+  - `meta.rs`: pinned and unread (`sessions.json`); a turn that ends in a session the window isn't showing marks it unread.
+  - `cli.rs`: control requests with answers (`call`); after each turn, `get_context_usage` (the composer's meter) and, once, `generate_session_title` with `persist`, so the terminal sees the same title; `set_max_thinking_tokens` (composer: Auto / Off / Think / Think hard / Think harder); fork (`--resume <id> --fork-session --session-id <new>`).
+  - The CLI ignores a project's permission rules until the folder is trusted (`~/.claude.json`); Settings → Permissions says so.
+  - Not yet: queued follow-up messages, background tasks (`background_tasks` / `stop_task`), fork from a message (M5).
+
 ## 8. Critical files
 - Move: `src-tauri/src/{cli,cli_e2e,sessions,settings,git,recent,paths}.rs` → `crates/forge-core/src/`.
 - New in core:

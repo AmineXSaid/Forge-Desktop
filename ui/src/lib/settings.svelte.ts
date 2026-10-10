@@ -7,7 +7,7 @@ import { call, type CcSettings, type Extensions, type Scope } from './ipc';
 import type { TabId } from './ccsettings';
 import { toast } from './store.svelte';
 
-const EMPTY: CcSettings = { user: {}, project: {}, local: {}, hasProject: false, errors: [] };
+const EMPTY: CcSettings = { user: {}, project: {}, local: {}, hasProject: false, trusted: true, errors: [] };
 
 class SettingsWindow {
   open = $state(false);

@@ -9,13 +9,13 @@ const H = 3600_000;
 const DEMO = '9b1c2d3e-0000-4000-8000-00000000000a';
 
 const list = [
-  { id: DEMO, title: 'Fix the greeting and add a test', updated: now - 4 * 60_000, branch: 'main' },
-  { id: '9b1c2d3e-0000-4000-8000-00000000000b', title: 'Explain the hermes review pipeline', updated: now - 2 * H, branch: 'fix/hermes_upgrade' },
-  { id: '9b1c2d3e-0000-4000-8000-00000000000c', title: 'Speed up the session store', updated: now - 5 * H, branch: 'main' },
-  { id: '9b1c2d3e-0000-4000-8000-00000000000d', title: 'Write a README for the CLI', updated: now - 26 * H, branch: 'main' },
-  { id: '9b1c2d3e-0000-4000-8000-00000000000e', title: 'Why does cargo test hang on Windows?', updated: now - 30 * H, branch: 'main' },
-  { id: '9b1c2d3e-0000-4000-8000-00000000000f', title: 'Migrate settings to the new schema', updated: now - 4 * 24 * H, branch: 'main' },
-  { id: '9b1c2d3e-0000-4000-8000-000000000010', title: 'Genesis redesign: landing page', updated: now - 12 * 24 * H, branch: 'design' },
+  { id: DEMO, title: 'Fix the greeting and add a test', updated: now - 4 * 60_000, branch: 'main', named: true, pinned: true, unread: false },
+  { id: '9b1c2d3e-0000-4000-8000-00000000000b', title: 'Explain the hermes review pipeline', updated: now - 2 * H, branch: 'fix/hermes_upgrade', named: true, pinned: false, unread: true },
+  { id: '9b1c2d3e-0000-4000-8000-00000000000c', title: 'Speed up the session store', updated: now - 5 * H, branch: 'main', named: false, pinned: false, unread: false },
+  { id: '9b1c2d3e-0000-4000-8000-00000000000d', title: 'Write a README for the CLI', updated: now - 26 * H, branch: 'main', named: false, pinned: false, unread: false },
+  { id: '9b1c2d3e-0000-4000-8000-00000000000e', title: 'Why does cargo test hang on Windows?', updated: now - 30 * H, branch: 'main', named: false, pinned: false, unread: false },
+  { id: '9b1c2d3e-0000-4000-8000-00000000000f', title: 'Migrate settings to the new schema', updated: now - 4 * 24 * H, branch: 'main', named: false, pinned: false, unread: false },
+  { id: '9b1c2d3e-0000-4000-8000-000000000010', title: 'Genesis redesign: landing page', updated: now - 12 * 24 * H, branch: 'design', named: false, pinned: false, unread: false },
 ];
 
 const saved: SessionEvent[] = [
@@ -72,6 +72,7 @@ const cc: CcSettings = {
   },
   local: { sandbox: { enabled: true, excludedCommands: ['docker'] }, effortLevel: 'high' },
   hasProject: true,
+  trusted: false,
   errors: [],
 };
 const memory: Record<Scope, string> = {
@@ -121,6 +122,11 @@ export function mockBackend(): Backend {
     sessions_list: () => list,
     session_load: ({ id }) => (id === DEMO ? saved : [{ kind: 'user', text: list.find((l) => l.id === id)?.title ?? '' }, { kind: 'text', block: 'x:1', text: 'This is an older conversation.' }, { kind: 'turnEnd', ok: true, durationMs: 3200, costUsd: 0.004, error: null }]),
     session_new: () => crypto.randomUUID(),
+    session_prewarm: ({ id }) => { send(id, [{ kind: 'state', state: 'warming' }, { kind: 'state', state: 'ready' }], 300); },
+    session_fork: () => crypto.randomUUID(),
+    session_pin: ({ id, pinned }) => { const r = list.find((l) => l.id === id); if (r) r.pinned = pinned; },
+    session_focus: ({ id }) => { const r = list.find((l) => l.id === id); if (r) r.unread = false; },
+    sessions_search: ({ query }) => list.filter((l) => /review|pipeline/i.test(query) && l.title.includes('hermes')).map((l) => l.id),
     session_send: ({ id, text }) => {
       const words = `Let me look at how the project is laid out before changing anything. ${/test/i.test(text) ? "I'll run the test suite first." : "I'll start with the build."}`.split(/(?<= )/);
       send(id, [
@@ -139,6 +145,8 @@ export function mockBackend(): Backend {
         ...'All 21 tests pass, so the build is healthy and we can start on the change.'.split(/(?<= )/).map((w): SessionEvent => ({ kind: 'textDelta', block: 'live:2', text: w })),
         { kind: 'blockDone', block: 'live:2' },
         { kind: 'turnEnd', ok: true, durationMs: 9100, costUsd: 0.0123, error: null },
+        { kind: 'context', used: 61_400, max: 200_000, percent: 30.7 },
+        { kind: 'title', title: 'Run the test suite before the change' },
       ] : [
         { kind: 'toolResult', id: 'lt1', output: 'The user declined this.', isError: true },
         { kind: 'textDelta', block: 'live:3', text: "Understood, I won't run it. Tell me what you'd like to do instead." },

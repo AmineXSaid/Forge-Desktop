@@ -24,7 +24,13 @@ export type SessionEvent =
   | { kind: 'turnEnd'; ok: boolean; durationMs: number | null; costUsd: number | null; error: string | null }
   | { kind: 'notice'; tone: string; text: string }
   | { kind: 'capabilities'; models: unknown; commands: unknown }
-  | { kind: 'exited'; code: number | null; stderr: string };
+  | { kind: 'state'; state: 'warming' | 'ready' | 'running' | 'needsYou' }
+  | { kind: 'context'; used: number; max: number; percent: number }
+  | { kind: 'title'; title: string }
+  /** Sent with session '': the project's saved sessions changed on disk. */
+  | { kind: 'sessionsChanged' }
+  /** `expected`: Forge stopped it (closed, reaped, replaced): no error. */
+  | { kind: 'exited'; code: number | null; stderr: string; expected: boolean };
 
 export type Envelope = { session: string; event: SessionEvent };
 
@@ -38,7 +44,10 @@ export type Info = {
   claude: string | null;
   running: string[];
 };
-export type Summary = { id: string; title: string; updated: number; branch: string | null };
+export type Summary = { id: string; title: string; updated: number; branch: string | null; named: boolean; pinned: boolean; unread: boolean };
+export type Thinking = 'auto' | 'off' | 'low' | 'medium' | 'high';
+/** What a session's CLI starts with. */
+export type Launch = { model?: string | null; mode?: string | null; thinking?: Thinking | null; forkFrom?: string | null };
 export type Profile = { id: string; name: string; baseUrl: string; model: string; auth: 'apiKey' | 'bearer' | 'none'; hasKey: boolean };
 export type Settings = {
   profiles: Profile[];
@@ -62,7 +71,7 @@ export type GitStatus = { isRepo: boolean; branch: string | null; files: Changed
 export type FileDiff = { path: string; status: string; original: string; modified: string; tooLargeOrBinary: boolean };
 export type Answer = { kind: 'allow' | 'always' | 'deny' | 'answer'; message?: string; answers?: Record<string, string> };
 export type Scope = 'user' | 'project' | 'local';
-export type CcSettings = { user: Record<string, any>; project: Record<string, any>; local: Record<string, any>; hasProject: boolean; errors: string[] };
+export type CcSettings = { user: Record<string, any>; project: Record<string, any>; local: Record<string, any>; hasProject: boolean; trusted: boolean; errors: string[] };
 export type Extension = { name: string; description: string; scope: 'user' | 'project'; path: string };
 export type McpServer = { name: string; transport: string; target: string; scope: 'user' | 'project' | 'local' };
 export type Extensions = { skills: Extension[]; agents: Extension[]; commands: Extension[]; mcpServers: McpServer[] };
@@ -76,10 +85,19 @@ export interface Commands {
   sessions_list: [{}, Summary[]];
   session_load: [{ id: string }, SessionEvent[]];
   session_new: [{}, string];
-  session_send: [{ id: string; text: string; model: string | null; mode: string | null }, void];
+  session_send: [{ id: string; text: string; launch: Launch }, void];
+  /** Start (or resume) the session's CLI before its next message. */
+  session_prewarm: [{ id: string; launch: Launch }, void];
+  /** A new session that starts as a copy of `from`; returns its id. */
+  session_fork: [{ from: string }, string];
+  session_pin: [{ id: string; pinned: boolean }, void];
+  /** The session the window shows (null: none); it is read. */
+  session_focus: [{ id: string | null }, void];
+  /** Ids of sessions whose messages contain the text. */
+  sessions_search: [{ query: string }, string[]];
   session_respond: [{ id: string; requestId: string; answer: Answer }, void];
   session_interrupt: [{ id: string }, void];
-  session_configure: [{ id: string; mode: string | null; model: string | null }, void];
+  session_configure: [{ id: string; mode: string | null; model: string | null; thinking?: Thinking | null }, void];
   session_stop: [{ id: string }, void];
   session_rename: [{ id: string; title: string }, void];
   session_archive: [{ id: string; archived: boolean }, void];

@@ -11,7 +11,10 @@
 
   const groups = $derived.by(() => {
     const out: { label: string; rows: Summary[] }[] = [];
-    for (const r of app.rows) {
+    const rows = app.rows;
+    const pinned = rows.filter((r) => r.pinned);
+    if (pinned.length) out.push({ label: 'Pinned', rows: pinned });
+    for (const r of rows.filter((r) => !r.pinned)) {
       const label = bucket(r.updated);
       if (out.at(-1)?.label !== label) out.push({ label, rows: [] });
       out.at(-1)!.rows.push(r);
@@ -24,9 +27,12 @@
   function more(e: MouseEvent, r: Summary) {
     e.stopPropagation();
     openMenu(e.currentTarget as HTMLElement, [
+      { label: r.pinned ? 'Unpin' : 'Pin', icon: 'pin', run: () => app.pin(r.id, !r.pinned) },
       { label: 'Rename', icon: 'pencil', run: () => { editing = r.id; editValue = r.title; } },
+      ...(app.list.some((x) => x.id === r.id) ? [{ label: 'Fork', desc: 'Continue in a copy', icon: 'branch', run: () => app.fork(r.id) }] : []),
+      '-' as const,
       { label: 'Archive', icon: 'archive', run: () => archive(r.id) },
-    ], { align: 'right', width: 180 });
+    ], { align: 'right', width: 220 });
   }
 
   async function archive(id: string) {
@@ -59,7 +65,7 @@
     </button>
     <label class="search">
       <Icon name="search" size={14} />
-      <input placeholder="Search" bind:value={app.search} />
+      <input placeholder="Search" value={app.search} oninput={(e) => app.searchFor(e.currentTarget.value)} />
     </label>
   </div>
 
@@ -75,7 +81,8 @@
         {:else}
           <div class="row" class:sel={app.current === r.id} role="button" tabindex="0" title={r.title}
             onclick={() => app.open(r.id)} onkeydown={(e) => e.key === 'Enter' && app.open(r.id)}>
-            <span class="t">{r.title}</span>
+            {#if r.unread && app.current !== r.id}<span class="unread" title="New since you last looked"></span>{/if}
+            <span class="t" class:bold={r.unread && app.current !== r.id}>{r.title}</span>
             {#if s?.status === 'needs'}<span class="pill needs">Needs you</span>
             {:else if s?.status === 'working'}<span class="pill working"><span class="pulse"></span>Working</span>
             {:else}<span class="when">{when(r.updated)}</span>{/if}
@@ -122,6 +129,8 @@
   .row:hover { background: var(--hover); color: var(--ink); }
   .row.sel { background: var(--card); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); font-weight: 500; }
   .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }
+  .unread { width: 7px; height: 7px; border-radius: 50%; background: var(--blue); flex: none; margin-left: -4px; }
+  .t.bold { color: var(--ink); font-weight: 500; }
   .when { font-size: 12px; color: var(--ink-4); flex: none; }
   .more { display: none; width: 24px; height: 24px; border-radius: 6px; place-items: center; color: var(--ink-3); flex: none; }
   .row:hover .more { display: grid; }

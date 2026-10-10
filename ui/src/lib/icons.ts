@@ -43,6 +43,7 @@ export const ICONS: Record<string, string> = {
   bot: '<rect x="4.5" y="8" width="15" height="11" rx="3"/><path d="M12 8V4.5M9.5 13v1M14.5 13v1"/><circle cx="12" cy="4" r="1" fill="currentColor"/>',
   slash: '<rect x="3.5" y="3.5" width="17" height="17" rx="3"/><path d="m14.5 7.5-5 9"/>',
   box: '<path d="M12 3 4 7v10l8 4 8-4V7z"/><path d="m4 7 8 4 8-4M12 11v10"/>',
+  pin: '<path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7"/>',
   reset: '<path d="M4 12a8 8 0 1 0 2.3-5.7"/><path d="M4 4v5h5"/>',
   external: '<path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
 };

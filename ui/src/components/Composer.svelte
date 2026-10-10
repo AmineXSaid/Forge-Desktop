@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from './Icon.svelte';
-  import { app, MODES, toast, type SessionState } from '../lib/store.svelte';
+  import { app, MODES, THINKING, toast, type SessionState } from '../lib/store.svelte';
+  import type { Thinking } from '../lib/ipc';
   import { call } from '../lib/ipc';
   import { openMenu } from '../lib/menu.svelte';
 
@@ -32,8 +33,27 @@
 
   async function ensure(): Promise<SessionState> {
     if (session) return session;
-    app.current = await call('session_new');
+    app.current = app.draft ?? (await call('session_new'));
+    app.draft = null;
     return app.session(app.current);
+  }
+
+  const thinking = $derived(THINKING.find((t) => t.id === (session?.thinking ?? 'auto'))!);
+  const ctx = $derived(session?.context ?? null);
+  const fmt = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+
+  async function setThinking(id: Thinking) {
+    const s = await ensure();
+    s.thinking = id;
+    if (s.running) await call('session_configure', { id: s.id, mode: null, model: null, thinking: id }).catch((e) => toast(String(e), 'error'));
+    box?.focus();
+  }
+
+  function thinkingMenu(e: MouseEvent) {
+    openMenu(e.currentTarget as HTMLElement, [
+      { header: 'Thinking' },
+      ...THINKING.map((t) => ({ label: t.label, desc: t.desc, checked: t.id === thinking.id, run: () => setThinking(t.id) })),
+    ], { above: true, width: 240 });
   }
 
   async function setMode(id: string) {
@@ -94,14 +114,22 @@
 </script>
 
 <div class="composer">
-  <textarea bind:this={box} bind:value={draft} rows="1" {placeholder} spellcheck="true" onkeydown={key}></textarea>
+  <textarea bind:this={box} bind:value={draft} rows="1" {placeholder} spellcheck="true" onkeydown={key} onfocus={() => app.prewarm()}></textarea>
   <div class="row">
     <button class="picker mode-{mode.id}" title="Permissions (Shift+Tab)" onclick={modeMenu}>
       <Icon name={mode.id === 'plan' ? 'plan' : mode.id === 'acceptEdits' ? 'pencil' : mode.id === 'bypassPermissions' ? 'bolt' : mode.id === 'auto' ? 'sparkle' : 'hand'} size={14} />
       {mode.short}<Icon name="chevron" size={12} />
     </button>
     <button class="picker" title="Model" onclick={modelMenu}><Icon name="cpu" size={14} />{modelLabel}<Icon name="chevron" size={12} /></button>
+    <button class="picker" class:on={thinking.id !== 'auto'} title="Thinking" onclick={thinkingMenu}><Icon name="brain" size={14} />{thinking.id === 'auto' ? 'Thinking' : thinking.label}<Icon name="chevron" size={12} /></button>
     <span class="grow"></span>
+    {#if ctx}
+      <span class="ctx" class:high={ctx.percent >= 80} title="Context: {ctx.used.toLocaleString()} of {ctx.max.toLocaleString()} tokens ({Math.round(ctx.percent)}%)">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" class="track" /><circle cx="8" cy="8" r="6" class="fill" stroke-dasharray="{(Math.min(100, ctx.percent) / 100) * 37.7} 37.7" /></svg>
+        {fmt(ctx.used)} / {fmt(ctx.max)}
+      </span>
+    {/if}
+    {#if session?.state === 'warming'}<span class="warm" title="Starting Claude Code"><span class="spinner"></span></span>{/if}
     <button class="send" class:stop={canStop} disabled={!canStop && !draft.trim()} title={canStop ? 'Stop (Esc)' : 'Send (Enter)'} onclick={submit}>
       <Icon name={canStop ? 'stop' : 'up'} size={16} />
     </button>
@@ -129,6 +157,15 @@
   .picker.mode-plan { background: var(--status-plan-bg); color: var(--status-plan-fg); }
   .picker.mode-acceptEdits { color: var(--add-fg); }
   .picker.mode-bypassPermissions { background: var(--status-error-bg); color: var(--status-error-fg); }
+  .picker.on { color: var(--ink); }
+  .ctx { display: inline-flex; align-items: center; gap: 6px; font: 500 12px var(--font-mono); color: var(--ink-4); margin-right: 8px; }
+  .ctx svg { transform: rotate(-90deg); }
+  .ctx circle { fill: none; stroke-width: 2.2; }
+  .ctx .track { stroke: var(--line-strong); }
+  .ctx .fill { stroke: var(--ink-3); stroke-linecap: round; }
+  .ctx.high { color: var(--status-needs-fg); }
+  .ctx.high .fill { stroke: var(--marigold); }
+  .warm { display: grid; place-items: center; width: 24px; margin-right: 4px; }
   .send {
     width: 32px; height: 32px; border-radius: var(--r-button); display: grid; place-items: center;
     background: var(--blue); color: var(--blue-text); transition: background var(--t) var(--ease), opacity var(--t) var(--ease), transform 120ms var(--ease);

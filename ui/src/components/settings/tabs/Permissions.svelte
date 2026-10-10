@@ -3,11 +3,16 @@
   import Field from '../Field.svelte';
   import Row from '../Row.svelte';
   import Toggle from '../Toggle.svelte';
+  import Icon from '../../Icon.svelte';
   import { effective } from '../../../lib/ccsettings';
   import { settingsWindow as sw } from '../../../lib/settings.svelte';
 
   const bypassOff = $derived(effective(sw.cc, 'permissions.disableBypassPermissionsMode').value === 'disable');
 </script>
+
+{#if sw.cc.hasProject && !sw.cc.trusted}
+  <p class="note"><Icon name="alert" size={14} />Claude Code ignores this project's own permission rules (Workspace and Local) until you trust the folder: run <code>claude</code> in it once and accept the trust prompt.</p>
+{/if}
 
 <Section title="Default mode">
   <Field key="permissions.defaultMode" type="choice" label="Permission mode" desc="How Claude Code starts when Forge doesn't choose. Bypass is only ever chosen per session, in the composer."
@@ -26,3 +31,9 @@
 <Section title="Additional directories">
   <Field key="permissions.additionalDirectories" type="list" label="Directories" desc="Folders outside the project Claude Code may read and edit." placeholder="../shared or C:\docs" />
 </Section>
+
+<style>
+  .note { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 18px; font-size: 13px; color: var(--status-needs-fg); background: var(--status-needs-bg); padding: 10px 14px; border-radius: var(--r-button); }
+  .note :global(.icon) { margin-top: 2px; flex: none; }
+  code { font: 12px var(--font-mono); }
+</style>

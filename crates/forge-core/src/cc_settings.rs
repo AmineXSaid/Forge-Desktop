@@ -79,6 +79,9 @@ pub struct AllScopes {
     pub project: Value,
     pub local: Value,
     pub has_project: bool,
+    /// Whether Claude Code trusts the project folder. Until it does, it
+    /// ignores the project's permission rules (`~/.claude.json`, read only).
+    pub trusted: bool,
     /// A file that could not be read (bad JSON): shown, never overwritten.
     pub errors: Vec<String>,
 }
@@ -94,7 +97,19 @@ pub fn read_all(project: Option<&Path>) -> AllScopes {
             json!({})
         }
     };
-    AllScopes { user: read(Scope::User), project: read(Scope::Project), local: read(Scope::Local), has_project: project.is_some(), errors }
+    let trusted = project.is_some_and(trusted);
+    AllScopes { user: read(Scope::User), project: read(Scope::Project), local: read(Scope::Local), has_project: project.is_some(), trusted, errors }
+}
+
+/// `projects[<path>].hasTrustDialogAccepted` in `~/.claude.json`, for the
+/// folder or one above it.
+pub fn trusted(project: &Path) -> bool {
+    let Some(state) = cli::home_dir().map(|h| h.join(".claude.json")).and_then(|p| fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok()) else {
+        return false;
+    };
+    project.ancestors().any(|dir| {
+        state.get("projects").and_then(|p| p.get(dir.to_string_lossy().as_ref())).and_then(|p| p.get("hasTrustDialogAccepted")).and_then(Value::as_bool) == Some(true)
+    })
 }
 
 enum Rule {
@@ -589,6 +604,26 @@ mod tests {
         assert!(x.mcp_servers.contains(&McpServer { name: "fs".into(), transport: "stdio".into(), target: "npx -y fs".into(), scope: "project" }));
         assert!(x.mcp_servers.iter().any(|m| m.name == "docs" && m.target == "https://x/mcp"));
         let _ = fs::remove_dir_all(&p);
+    }
+
+    #[test]
+    fn trust_comes_from_the_cli_state_file() {
+        let _env = crate::cli::tests_env::lock();
+        let home = tmp("trust");
+        let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let old = std::env::var_os(var);
+        std::env::set_var(var, &home);
+        let proj = home.join("work").join("app");
+        assert!(!trusted(&proj), "no state file: not trusted");
+        let key = home.join("work").display().to_string();
+        fs::write(home.join(".claude.json"), json!({"projects": {key: {"hasTrustDialogAccepted": true}}}).to_string()).unwrap();
+        assert!(trusted(&proj), "trusting a parent folder covers the project");
+        assert!(!trusted(&home.join("elsewhere")));
+        match old {
+            Some(v) => std::env::set_var(var, v),
+            None => std::env::remove_var(var),
+        }
+        let _ = fs::remove_dir_all(&home);
     }
 
     #[test]

@@ -4,15 +4,17 @@
 //! is waiting on.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use forge_core::cli::{self, Decision, Session};
+use forge_core::cli::{self, Decision, Session, Thinking};
 use forge_core::events::{self, Envelope, SessionEvent};
+use forge_core::meta::Meta;
+use forge_core::session_manager::{self, Limits};
 use forge_core::settings::{self, Settings};
-use forge_core::{cc_settings, git, recent, sessions};
+use forge_core::{cc_settings, git, recent, sessions, watch};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tauri::ipc::Channel;
@@ -23,9 +25,15 @@ use crate::paths;
 
 pub struct AppState {
     pub project: Mutex<Option<PathBuf>>,
-    pub running: Mutex<HashMap<String, Arc<Session>>>,
+    /// The live CLI processes (prewarm, reaping, the cap).
+    pub live: Arc<session_manager::Manager>,
     events: Mutex<Sender<Out>>,
-    cache: sessions::Cache,
+    /// Set once the data folder is known (`init`).
+    index: OnceLock<(sessions::Index, PathBuf)>,
+    meta: OnceLock<Meta>,
+    /// The session the window shows: its turns don't mark it unread.
+    focused: Mutex<Option<String>>,
+    watch: Mutex<Option<watch::Watch>>,
 }
 
 enum Out {
@@ -83,7 +91,17 @@ impl Default for AppState {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
         std::thread::Builder::new().name("events".into()).spawn(move || emitter(rx)).expect("the event thread starts");
-        AppState { project: Mutex::default(), running: Mutex::default(), events: Mutex::new(tx), cache: sessions::Cache::default() }
+        let live = Arc::new(session_manager::Manager::new(Limits::default()));
+        live.spawn_reaper();
+        AppState {
+            project: Mutex::default(),
+            live,
+            events: Mutex::new(tx),
+            index: OnceLock::new(),
+            meta: OnceLock::new(),
+            focused: Mutex::default(),
+            watch: Mutex::default(),
+        }
     }
 }
 
@@ -93,10 +111,45 @@ impl AppState {
     }
 
     pub fn stop_all(&self) {
-        let all: Vec<_> = self.running.lock().unwrap().drain().map(|(_, s)| s).collect();
-        for s in all {
-            s.stop();
+        self.live.stop_all();
+        self.save_index();
+    }
+
+    /// Load what is kept in the data folder: the session index and marks.
+    pub fn init(&self, data: &Path) {
+        let file = data.join("session-index.json");
+        let _ = self.index.set((sessions::Index::load(&file), file));
+        let _ = self.meta.set(Meta::load(data));
+    }
+
+    fn save_index(&self) {
+        if let Some((index, file)) = self.index.get() {
+            if let Err(e) = index.save(file) {
+                paths::log("warn", &format!("could not save the session index: {e}"));
+            }
         }
+    }
+
+    /// Watch the project's transcripts: sessions started elsewhere appear live.
+    pub fn watch_project(&self, app: &AppHandle, folder: &Path) {
+        let handle = app.clone();
+        let w = watch::sessions(folder, move || {
+            state(&handle).emit(Envelope { session: String::new(), event: SessionEvent::SessionsChanged });
+        });
+        match w {
+            Ok(w) => *self.watch.lock().unwrap() = Some(w),
+            Err(e) => paths::log("warn", &format!("could not watch the sessions folder: {e}")),
+        }
+    }
+
+    /// Every session event passes here on its way to the window.
+    fn on_event(&self, e: Envelope) {
+        if matches!(e.event, SessionEvent::TurnEnd { .. }) && self.focused.lock().unwrap().as_deref() != Some(e.session.as_str()) {
+            if let Some(meta) = self.meta.get() {
+                let _ = meta.set_unread(&e.session, true);
+            }
+        }
+        self.emit(e);
     }
 }
 
@@ -154,7 +207,7 @@ pub fn app_info(app: AppHandle) -> Info {
         .filter(|p| p.is_dir())
         .map(|p| RecentProject { path: p.display().to_string(), name: folder_name(&p) })
         .collect();
-    let running = state(&app).running.lock().unwrap().iter().filter(|(_, s)| s.is_running()).map(|(id, _)| id.clone()).collect();
+    let running = state(&app).live.running_ids();
     Info {
         name: workspace.as_deref().map(folder_name),
         workspace: workspace.map(|p| p.display().to_string()),
@@ -213,7 +266,56 @@ pub async fn sessions_list(app: AppHandle) -> Result<Vec<sessions::Summary>, Str
     let Ok(cwd) = project(&app) else { return Ok(vec![]) };
     let hidden = Settings::load(&data_dir(&app)?).archived;
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || sessions::list(&cwd, &state(&handle).cache, &hidden)).await.map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let st = state(&handle);
+        let Some((index, _)) = st.index.get() else { return vec![] };
+        let started = Instant::now();
+        let mut list = sessions::list(&cwd, index, &hidden);
+        if let Some(meta) = st.meta.get() {
+            let marks = meta.marks();
+            for s in &mut list {
+                s.pinned = marks.pinned.contains(&s.id);
+                s.unread = marks.unread.contains(&s.id);
+            }
+        }
+        st.save_index();
+        let ms = started.elapsed().as_millis();
+        if ms > 50 {
+            paths::log("warn", &format!("listing {} sessions took {ms} ms", list.len()));
+        }
+        list
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Sessions whose messages contain the text (titles are filtered in the window).
+#[tauri::command]
+pub async fn sessions_search(app: AppHandle, query: String) -> Result<Vec<String>, String> {
+    let Ok(cwd) = project(&app) else { return Ok(vec![]) };
+    if query.trim().chars().count() < 2 || query.len() > 200 {
+        return Ok(vec![]);
+    }
+    tauri::async_runtime::spawn_blocking(move || sessions::search(&cwd, &query, 200)).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn session_pin(app: AppHandle, id: String, pinned: bool) -> Result<(), String> {
+    check_id(&id)?;
+    state(&app).meta.get().ok_or("not ready")?.set_pinned(&id, pinned)
+}
+
+/// The session the window now shows (None: none). It is read from now on.
+#[tauri::command]
+pub fn session_focus(app: AppHandle, id: Option<String>) -> Result<(), String> {
+    if let Some(id) = &id {
+        check_id(id)?;
+        if let Some(meta) = state(&app).meta.get() {
+            meta.set_unread(id, false)?;
+        }
+    }
+    *state(&app).focused.lock().unwrap() = id;
+    Ok(())
 }
 
 #[tauri::command]
@@ -234,52 +336,104 @@ pub fn session_new() -> String {
 }
 
 fn running(app: &AppHandle, id: &str) -> Option<Arc<Session>> {
-    state(app).running.lock().unwrap().get(id).filter(|s| s.is_running()).cloned()
+    state(app).live.get(id)
 }
 
-/// Send a message, starting (or resuming) the session's CLI if it is not running.
-#[tauri::command]
-pub async fn session_send(app: AppHandle, id: String, text: String, model: Option<String>, mode: Option<String>) -> Result<(), String> {
-    check_id(&id)?;
-    if let Some(s) = running(&app, &id) {
-        return s.send(&text);
+/// What a new process for a session starts with.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Launch {
+    model: Option<String>,
+    mode: Option<String>,
+    /// "auto", "off", "low", "medium" or "high".
+    thinking: Option<String>,
+    /// Start as a copy of this saved session (fork).
+    fork_from: Option<String>,
+}
+
+/// Start the session's CLI (resuming its transcript if it has one) without
+/// sending anything. Returns the live session.
+async fn start(app: &AppHandle, id: &str, launch: Launch) -> Result<Arc<Session>, String> {
+    check_id(id)?;
+    if let Some(s) = running(app, id) {
+        return Ok(s);
     }
-    let cwd = project(&app)?;
+    let cwd = project(app)?;
     let binary = cli::find_claude().ok_or("Claude Code is not installed: no `claude` on PATH")?;
-    let settings = Settings::load(&data_dir(&app)?);
+    let settings = Settings::load(&data_dir(app)?);
     let profile = settings.active().cloned();
-    let model = model
+    let model = launch
+        .model
         .filter(|m| cli::valid_model(m))
         .or_else(|| profile.as_ref().map(|p| p.model.clone()).filter(|m| !m.is_empty()))
         .or(settings.default_model.clone());
-    let mode = mode.filter(|m| cli::MODES.contains(&m.as_str())).unwrap_or(settings.default_mode.clone());
+    let mode = launch.mode.filter(|m| cli::MODES.contains(&m.as_str())).unwrap_or(settings.default_mode.clone());
+    let thinking = match launch.thinking.as_deref() {
+        Some(t) => Thinking::parse(t)?,
+        None => None,
+    };
+    if let Some(f) = &launch.fork_from {
+        check_id(f)?;
+    }
     let env = profile.map(|p| p.env(settings::key(&p.id))).unwrap_or_default();
     let handle = app.clone();
+    let id = id.to_string();
     let session = tauri::async_runtime::spawn_blocking(move || {
-        let resume = sessions::file(&cwd, &id).is_some();
+        let file = sessions::file(&cwd, &id);
+        let fork_from = launch.fork_from.filter(|f| sessions::file(&cwd, f).is_some());
+        // A title is asked for once: for a new session, or one that has none of its own yet.
+        let named = file.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).and_then(|t| sessions::summarize(&id, &t, std::time::SystemTime::now())).is_some_and(|s| s.named);
         let opts = cli::Options {
             binary,
             cwd,
+            resume: file.is_some() && fork_from.is_none(),
+            want_title: !named && fork_from.is_none(),
+            fork_from,
             session_id: id,
-            resume,
             model,
             // Always explicit: the CLI's own default can be `auto` (it is when
             // nonessential traffic is off), and the window must not say "Ask" then.
             permission_mode: Some(mode),
             env,
             env_remove: vec![],
+            thinking,
         };
         let sink_app = handle.clone();
-        Session::start(opts, Arc::new(move |e| state(&sink_app).emit(e)))
+        Session::start(opts, Arc::new(move |e| state(&sink_app).on_event(e)))
     })
     .await
     .map_err(|e| e.to_string())??;
-    session.send(&text)?;
-    let old = state(&app).running.lock().unwrap().insert(session.id.clone(), session);
-    if let Some(old) = old {
-        old.stop();
+    state(app).live.insert(session.clone());
+    Ok(session)
+}
+
+/// Start a session's CLI ahead of its first message (the composer got focus,
+/// a session was opened), or resume one that stopped.
+#[tauri::command]
+pub async fn session_prewarm(app: AppHandle, id: String, launch: Launch) -> Result<(), String> {
+    start(&app, &id, launch).await.map(|_| ())
+}
+
+/// A new session that starts as a copy of `from`; returns its id. Its
+/// transcript is written with its first message.
+#[tauri::command]
+pub async fn session_fork(app: AppHandle, from: String) -> Result<String, String> {
+    check_id(&from)?;
+    let cwd = project(&app)?;
+    if sessions::file(&cwd, &from).is_none() {
+        return Err("only a saved conversation can be forked".into());
     }
-    Ok(())
+    let id = uuid::Uuid::new_v4().to_string();
+    start(&app, &id, Launch { fork_from: Some(from), ..Default::default() }).await?;
+    Ok(id)
+}
+
+/// Send a message, starting (or resuming) the session's CLI if it is not running.
+#[tauri::command]
+pub async fn session_send(app: AppHandle, id: String, text: String, launch: Launch) -> Result<(), String> {
+    check_id(&id)?;
+    let session = start(&app, &id, launch).await?;
+    session.send(&text)
 }
 
 #[derive(Deserialize)]
@@ -310,9 +464,10 @@ pub fn session_interrupt(app: AppHandle, id: String) -> Result<(), String> {
     running(&app, &id).map_or(Ok(()), |s| s.interrupt())
 }
 
-/// Change a running session's mode or model; a stopped one takes them on its next start.
+/// Change a running session's mode, model or thinking; a stopped one takes
+/// them on its next start.
 #[tauri::command]
-pub fn session_configure(app: AppHandle, id: String, mode: Option<String>, model: Option<String>) -> Result<(), String> {
+pub fn session_configure(app: AppHandle, id: String, mode: Option<String>, model: Option<String>, thinking: Option<String>) -> Result<(), String> {
     check_id(&id)?;
     let Some(s) = running(&app, &id) else { return Ok(()) };
     if let Some(mode) = mode {
@@ -321,13 +476,16 @@ pub fn session_configure(app: AppHandle, id: String, mode: Option<String>, model
     if let Some(model) = model {
         s.set_model(&model)?;
     }
+    if let Some(t) = thinking {
+        s.set_thinking(Thinking::parse(&t)?)?;
+    }
     Ok(())
 }
 
 #[tauri::command]
 pub fn session_stop(app: AppHandle, id: String) -> Result<(), String> {
     check_id(&id)?;
-    if let Some(s) = state(&app).running.lock().unwrap().remove(&id) {
+    if let Some(s) = state(&app).live.remove(&id) {
         s.stop();
     }
     Ok(())
