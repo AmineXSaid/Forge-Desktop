@@ -1,6 +1,7 @@
 //! Forge Desktop's engine. Nothing here knows about the window: the app shell
 //! (`src-tauri`) turns these into commands and one event channel.
 
+pub mod cc_settings;
 pub mod cli;
 pub mod events;
 pub mod git;

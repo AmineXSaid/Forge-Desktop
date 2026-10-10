@@ -111,6 +111,14 @@ pub fn run() {
             desktop::notify,
             desktop::open_url,
             desktop::reveal,
+            desktop::cc_settings_get,
+            desktop::cc_settings_set,
+            desktop::hook_add,
+            desktop::hook_remove,
+            desktop::memory_read,
+            desktop::memory_write,
+            desktop::extensions_list,
+            desktop::open_file,
         ])
         .setup(|app| {
             let handle = app.handle().clone();

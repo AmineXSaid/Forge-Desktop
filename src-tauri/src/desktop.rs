@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use forge_core::cli::{self, Decision, Session};
 use forge_core::events::{self, Envelope, SessionEvent};
 use forge_core::settings::{self, Settings};
-use forge_core::{git, recent, sessions};
+use forge_core::{cc_settings, git, recent, sessions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tauri::ipc::Channel;
@@ -460,4 +460,87 @@ pub fn reveal(app: AppHandle, path: String) -> Result<(), String> {
     }
     use tauri_plugin_opener::OpenerExt;
     app.opener().reveal_item_in_dir(full).map_err(|e| e.to_string())
+}
+
+// ---------------------------------------------------------------- Claude Code settings
+
+fn open_project_dir(app: &AppHandle) -> Option<PathBuf> {
+    state(app).project.lock().unwrap().clone()
+}
+
+#[tauri::command]
+pub fn cc_settings_get(app: AppHandle) -> cc_settings::AllScopes {
+    cc_settings::read_all(open_project_dir(&app).as_deref())
+}
+
+#[tauri::command]
+pub fn cc_settings_set(app: AppHandle, scope: String, key: String, value: Value) -> Result<(), String> {
+    let scope = cc_settings::Scope::parse(&scope)?;
+    paths::log("info", &format!("settings: {key} in {scope:?}"));
+    cc_settings::set(scope, open_project_dir(&app).as_deref(), &key, value)
+}
+
+/// A hook makes the CLI run a command, so the person confirms the exact
+/// command in a native dialog before it is written.
+#[tauri::command]
+pub async fn hook_add(app: AppHandle, scope: String, event: String, matcher: String, command: String, timeout: Option<u32>) -> Result<bool, String> {
+    let scope = cc_settings::Scope::parse(&scope)?;
+    cc_settings::check_hook(&event, &matcher, &command, timeout)?;
+    use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
+    let when = if matcher.is_empty() { event.clone() } else { format!("{event} ({matcher})") };
+    let ok = app
+        .dialog()
+        .message(format!("Claude Code will run this command on {when}:\n\n{command}\n\nOnly add commands you trust."))
+        .title("Add a hook?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom("Add hook".into(), "Cancel".into()))
+        .blocking_show();
+    if !ok {
+        return Ok(false);
+    }
+    paths::log("info", &format!("hook added on {when}: {command}"));
+    cc_settings::add_hook(scope, open_project_dir(&app).as_deref(), &event, &matcher, &command, timeout)?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub fn hook_remove(app: AppHandle, scope: String, event: String, group: usize, index: usize) -> Result<(), String> {
+    let scope = cc_settings::Scope::parse(&scope)?;
+    cc_settings::remove_hook(scope, open_project_dir(&app).as_deref(), &event, group, index)
+}
+
+#[tauri::command]
+pub fn memory_read(app: AppHandle, which: String) -> Result<String, String> {
+    cc_settings::memory_read(cc_settings::Memory::parse(&which)?, open_project_dir(&app).as_deref())
+}
+
+#[tauri::command]
+pub fn memory_write(app: AppHandle, which: String, text: String) -> Result<(), String> {
+    cc_settings::memory_write(cc_settings::Memory::parse(&which)?, open_project_dir(&app).as_deref(), &text)
+}
+
+#[tauri::command]
+pub async fn extensions_list(app: AppHandle) -> Result<cc_settings::Extensions, String> {
+    let project = open_project_dir(&app);
+    tauri::async_runtime::spawn_blocking(move || cc_settings::extensions(project.as_deref())).await.map_err(|e| e.to_string())
+}
+
+/// Open a settings, memory or extension file in its default app: only files
+/// under `~/.claude`, the project's `.claude`, or the project's CLAUDE files.
+#[tauri::command]
+pub fn open_file(app: AppHandle, path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path).canonicalize().map_err(|_| "no such file")?;
+    let mut allowed: Vec<PathBuf> = cli::config_dir().into_iter().collect();
+    if let Some(proj) = open_project_dir(&app) {
+        allowed.push(proj.join(".claude"));
+        allowed.push(proj.join("CLAUDE.md"));
+        allowed.push(proj.join("CLAUDE.local.md"));
+        allowed.push(proj.join(".mcp.json"));
+    }
+    let ok = allowed.iter().filter_map(|a| a.canonicalize().ok()).any(|a| p.starts_with(&a));
+    if !ok || !p.is_file() {
+        return Err("only Claude Code's own files open from here".into());
+    }
+    use tauri_plugin_opener::OpenerExt;
+    app.opener().open_path(p.display().to_string(), None::<&str>).map_err(|e| e.to_string())
 }
