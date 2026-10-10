@@ -7,13 +7,8 @@
 //! 3. Each chat session is a `claude` CLI process in the project folder
 //!    (`cli.rs`), started when the session gets its first message.
 
-mod cli;
 mod desktop;
-mod git;
 mod paths;
-mod recent;
-mod sessions;
-mod settings;
 
 use std::path::{Path, PathBuf};
 
@@ -21,6 +16,7 @@ use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_dialog::DialogExt;
 
 use desktop::AppState;
+use forge_core::recent;
 
 /// The project folder from the command line: the first argument that is a directory.
 fn folder_from_args() -> Option<PathBuf> {
@@ -117,7 +113,7 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
-            paths::init_log(&log_dir_for(&handle));
+            forge_core::log::init(&log_dir_for(&handle));
             paths::log("info", &format!("Forge Desktop {} starting", handle.package_info().version));
             WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Forge")

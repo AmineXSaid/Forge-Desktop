@@ -9,10 +9,21 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "tauri": "tauri",
-    "test": "cargo test --manifest-path src-tauri/Cargo.toml"
+    "ui:dev": "vite --config ui/vite.config.ts",
+    "ui:build": "vite build --config ui/vite.config.ts",
+    "ui:check": "svelte-check --tsconfig ui/tsconfig.json --workspace ui",
+    "ui:test": "vitest run --config ui/vite.config.ts",
+    "test": "pnpm ui:test && cargo test --workspace"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "2.12.1"
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tauri-apps/api": "^2.12.2",
+    "@tauri-apps/cli": "2.12.1",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.6",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.3"
   },
   "engines": {
     "node": ">=22"

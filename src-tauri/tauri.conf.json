@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.msaid.forge",
   "build": {
-    "frontendDist": "../web"
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm ui:dev",
+    "beforeBuildCommand": "pnpm ui:build"
   },
   "app": {
     "withGlobalTauri": true,

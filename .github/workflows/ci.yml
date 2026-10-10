@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+      - name: UI checks
+        run: pnpm ui:check
+      - name: UI unit tests
+        run: pnpm ui:test
+      - name: Rust tests
+        run: cargo test --workspace
+      - name: Installer
+        run: pnpm build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: forge-desktop-installer
+          path: target/release/bundle/nsis/*.exe

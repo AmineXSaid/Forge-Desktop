@@ -9,9 +9,9 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use serde_json::Value;
 
 use super::*;
+use crate::events::{Envelope, SessionEvent};
 use crate::sessions;
 
 struct Stub(std::process::Child);
@@ -22,7 +22,7 @@ impl Drop for Stub {
 }
 
 fn start_stub() -> Option<(Stub, u16)> {
-    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("test").join("stub-anthropic.mjs");
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("test").join("stub-anthropic.mjs");
     let mut child = Command::new("node").arg(script).stdout(Stdio::piped()).spawn().ok()?;
     let mut line = String::new();
     BufReader::new(child.stdout.take()?).read_line(&mut line).ok()?;
@@ -30,19 +30,19 @@ fn start_stub() -> Option<(Stub, u16)> {
     Some((Stub(child), port))
 }
 
-fn wait_for(rx: &mpsc::Receiver<Value>, what: &str, pred: impl Fn(&Value) -> bool) -> Value {
+fn wait_for(rx: &mpsc::Receiver<Envelope>, what: &str, pred: impl Fn(&SessionEvent) -> bool) -> SessionEvent {
     loop {
         match rx.recv_timeout(Duration::from_secs(90)) {
-            Ok(e) if pred(&e) => return e,
-            Ok(e) if e["type"] == "exit" => panic!("the CLI exited while waiting for {what}: {e}"),
+            Ok(e) if pred(&e.event) => return e.event,
+            Ok(Envelope { event: e @ SessionEvent::Exited { .. }, .. }) => panic!("the CLI exited while waiting for {what}: {e:?}"),
             Ok(_) => {}
             Err(_) => panic!("timed out waiting for {what}"),
         }
     }
 }
 
-fn is_result(e: &Value) -> bool {
-    e["type"] == "cli" && e["event"]["type"] == "result"
+fn is_turn_end(e: &SessionEvent) -> bool {
+    matches!(e, SessionEvent::TurnEnd { ok: true, .. })
 }
 
 #[test]
@@ -78,18 +78,19 @@ fn prompt_allow_write_save_and_resume() {
     };
 
     // 1. A new session asks before writing; allowing it writes the file.
-    let (tx, rx) = mpsc::channel::<Value>();
+    let (tx, rx) = mpsc::channel::<Envelope>();
     let sink: Sink = Arc::new(move |e| {
         let _ = tx.send(e);
     });
     let s = Session::start(options(false), sink).unwrap();
     s.send(&format!("write hello in {}", ws.display())).unwrap();
-    let prompt = wait_for(&rx, "the permission prompt", |e| e["type"] == "permission");
-    assert_eq!(prompt["tool"], "Write");
+    let SessionEvent::Permission { request_id, tool, .. } = wait_for(&rx, "the permission prompt", |e| matches!(e, SessionEvent::Permission { .. })) else { unreachable!() };
+    assert_eq!(tool, "Write");
     assert!(!ws.join("hello.txt").exists(), "nothing is written before the answer");
     assert!(s.respond("not-a-waiting-prompt", Decision::Allow).is_err());
-    s.respond(prompt["requestId"].as_str().unwrap(), Decision::Allow).unwrap();
-    wait_for(&rx, "the end of the turn", is_result);
+    s.respond(&request_id, Decision::Allow).unwrap();
+    wait_for(&rx, "the file's tool result", |e| matches!(e, SessionEvent::ToolResult { is_error: false, .. }));
+    wait_for(&rx, "the end of the turn", is_turn_end);
     assert_eq!(std::fs::read_to_string(ws.join("hello.txt")).unwrap(), "hello\n");
     s.stop();
 
@@ -102,18 +103,21 @@ fn prompt_allow_write_save_and_resume() {
     assert!(before >= 4, "user, assistant text, tool use, tool result: {before}");
 
     // 3. A second process resumes the same conversation.
-    let (tx, rx) = mpsc::channel::<Value>();
+    let (tx, rx) = mpsc::channel::<Envelope>();
     let sink: Sink = Arc::new(move |e| {
         let _ = tx.send(e);
     });
     let s = Session::start(options(true), sink).unwrap();
     s.send("hi again").unwrap();
-    let init = wait_for(&rx, "init", |e| e["type"] == "cli" && e["event"]["subtype"] == "init");
-    assert_eq!(init["event"]["session_id"], "6f1d3c2a-0b9e-4c11-8a7d-2e5f9b0c1d42");
-    wait_for(&rx, "the resumed turn", is_result);
+    wait_for(&rx, "the resumed CLI", |e| matches!(e, SessionEvent::Started { .. }));
+    wait_for(&rx, "the resumed reply", |e| matches!(e, SessionEvent::TextDelta { text, .. } if text.contains("Hello from the stub")));
+    wait_for(&rx, "the resumed turn", is_turn_end);
     s.stop();
     let after = sessions::load(&file).unwrap();
     assert!(after.len() > before);
     assert!(after.iter().any(|m| m["content"] == "hi again"));
+    let replayed = crate::events::replay(&after);
+    assert!(matches!(&replayed[0], SessionEvent::User { text } if text.starts_with("write hello in")));
+    assert!(replayed.iter().any(|e| matches!(e, SessionEvent::Tool { name, done: true, .. } if name == "Write")));
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -26,7 +26,10 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Map, Value};
 
-pub type Sink = Arc<dyn Fn(Value) + Send + Sync>;
+use crate::events::{Envelope, Normalizer, SessionEvent};
+use crate::log;
+
+pub type Sink = Arc<dyn Fn(Envelope) + Send + Sync>;
 
 /// Permission modes the CLI accepts.
 pub const MODES: &[&str] = &["default", "manual", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"];
@@ -71,6 +74,7 @@ pub struct Session {
     child: Mutex<Option<Child>>,
     pending: Mutex<HashMap<String, Pending>>,
     next_request: AtomicU64,
+    normalizer: Mutex<Normalizer>,
 }
 
 /// `claude` on this machine: `$FORGE_CLAUDE`, else PATH, else the places the
@@ -165,7 +169,7 @@ impl Session {
         let stdout = child.stdout.take().ok_or("the CLI has no stdout")?;
         let stderr = child.stderr.take().ok_or("the CLI has no stderr")?;
         let stdin = child.stdin.take().ok_or("the CLI has no stdin")?;
-        crate::paths::log("info", &format!("session {} started (pid {}) in {}", opts.session_id, child.id(), opts.cwd.display()));
+        log::write("info", &format!("session {} started (pid {}) in {}", opts.session_id, child.id(), opts.cwd.display()));
 
         let session = Arc::new(Session {
             id: opts.session_id.clone(),
@@ -173,6 +177,7 @@ impl Session {
             child: Mutex::new(Some(child)),
             pending: Mutex::new(HashMap::new()),
             next_request: AtomicU64::new(1),
+            normalizer: Mutex::new(Normalizer::default()),
         });
 
         let tail = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -181,7 +186,7 @@ impl Session {
             let id = session.id.clone();
             std::thread::spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    crate::paths::log("cli", &format!("{id}: {line}"));
+                    log::write("cli", &format!("{id}: {line}"));
                     let mut t = tail.lock().unwrap();
                     t.push(line);
                     if t.len() > 20 {
@@ -200,33 +205,49 @@ impl Session {
                 let code = session.child.lock().unwrap().as_mut().and_then(|c| c.wait().ok()).and_then(|s| s.code());
                 session.pending.lock().unwrap().clear();
                 let stderr = tail.lock().unwrap().join("\n");
-                crate::paths::log("info", &format!("session {} exited ({code:?})", session.id));
-                sink(json!({"type": "exit", "session": session.id, "code": code, "stderr": stderr}));
+                log::write("info", &format!("session {} exited ({code:?})", session.id));
+                session.emit(&sink, SessionEvent::Exited { code, stderr });
             });
         }
         session.request("initialize", json!({}))?;
         Ok(session)
     }
 
+    fn emit(&self, sink: &Sink, event: SessionEvent) {
+        sink(Envelope { session: self.id.clone(), event });
+    }
+
     fn handle_line(&self, line: &str, sink: &Sink) {
         let Ok(Value::Object(event)) = serde_json::from_str::<Value>(line) else {
-            crate::paths::log("cli-stdout", line);
+            log::write("cli-stdout", line);
             return;
         };
         match event.get("type").and_then(Value::as_str) {
             Some("control_request") => self.on_control_request(&event, sink),
             Some("control_response") => {
                 let response = event.get("response").cloned().unwrap_or(Value::Null);
-                sink(json!({"type": "control", "session": self.id, "response": response}));
+                if response.get("subtype").and_then(Value::as_str) == Some("error") {
+                    log::write("warn", &format!("{}: control request failed: {}", self.id, response));
+                } else if let Some(r) = response.get("response").filter(|r| r.get("models").is_some() || r.get("commands").is_some()) {
+                    self.emit(sink, SessionEvent::Capabilities {
+                        models: r.get("models").cloned().unwrap_or(Value::Null),
+                        commands: r.get("commands").cloned().unwrap_or(Value::Null),
+                    });
+                }
             }
             Some("control_cancel_request") => {
                 if let Some(id) = event.get("request_id").and_then(Value::as_str) {
                     self.pending.lock().unwrap().remove(id);
-                    sink(json!({"type": "permission_cancelled", "session": self.id, "requestId": id}));
+                    self.emit(sink, SessionEvent::PermissionClosed { request_id: id.to_string(), reason: "cancelled".into() });
                 }
             }
-            Some(_) => sink(json!({"type": "cli", "session": self.id, "event": Value::Object(event)})),
-            None => crate::paths::log("cli-stdout", line),
+            Some(_) => {
+                let events = self.normalizer.lock().unwrap().feed(&Value::Object(event));
+                for e in events {
+                    self.emit(sink, e);
+                }
+            }
+            None => log::write("cli-stdout", line),
         }
     }
 
@@ -238,17 +259,16 @@ impl Session {
                 let tool = request.get("tool_name").and_then(Value::as_str).unwrap_or_default().to_string();
                 let input = request.get("input").cloned().unwrap_or(json!({}));
                 let suggestions = request.get("permission_suggestions").cloned().unwrap_or(Value::Null);
-                sink(json!({
-                    "type": "permission",
-                    "session": self.id,
-                    "requestId": request_id,
-                    "tool": tool,
-                    "input": input,
-                    "description": request.get("description").cloned().unwrap_or(Value::Null),
-                    "toolUseId": request.get("tool_use_id").cloned().unwrap_or(Value::Null),
-                    "canAlwaysAllow": suggestions.as_array().is_some_and(|s| !s.is_empty()),
-                }));
-                self.pending.lock().unwrap().insert(request_id, Pending { tool, input, suggestions });
+                // Recorded before the window hears of it, so an instant answer finds it.
+                self.pending.lock().unwrap().insert(request_id.clone(), Pending { tool: tool.clone(), input: input.clone(), suggestions: suggestions.clone() });
+                self.emit(sink, SessionEvent::Permission {
+                    request_id,
+                    tool,
+                    input,
+                    description: request.get("description").and_then(Value::as_str).map(String::from),
+                    tool_use_id: request.get("tool_use_id").and_then(Value::as_str).map(String::from),
+                    can_always_allow: suggestions.as_array().is_some_and(|s| !s.is_empty()),
+                });
             }
             other => {
                 let error = format!("Forge Desktop does not handle {}", other.unwrap_or("this request"));

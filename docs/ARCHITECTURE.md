@@ -32,7 +32,7 @@ Everything else (sessions, providers, the UI, Windows integration) is Rust plus 
 ```
 ┌──────────────────────── WebView2: UI (Svelte 5 + TS, compiled) ─────────────────────────┐
 │ Title bar · Sidebar · Thread · Composer · Cards · Changes · Settings · Onboarding       │
-└───────────── typed commands (tauri-specta) ▲ one coalesced event channel ───────────────┘
+└───────────── typed commands (ui/src/lib/ipc.ts) ▲ one coalesced event channel ───────────────┘
                                              │   (page is untrusted: every input checked)
 ┌─────────────────────────────── src-tauri (app shell) ───────────────────────────────────┐
 │ commands.rs · events.rs · window.rs (frameless, snap layouts, state, single instance)   │
@@ -52,7 +52,7 @@ Everything else (sessions, providers, the UI, Windows integration) is Rust plus 
 - **Rust owns session state.** CLI events are normalised in Rust into a typed `SessionEvent` enum: TextDelta, ThinkingDelta, ToolStart, ToolInput, ToolResult, Permission, Question, PlanReview, TurnEnd{usage, cost}, Status, Error, Exited. Rust keeps each live session's transcript model. Then:
   - a page reload or project switch restores live sessions;
   - toasts, tray badges and sidebar status work even when the page isn't looking.
-- **Typed IPC.** `tauri-specta` generates TypeScript types for every command and event, so the Rust/UI contract can't drift.
+- **Typed IPC.** `ui/src/lib/ipc.ts` declares every command and event in TypeScript; a Rust test fails if a command or a `SessionEvent` kind is missing from it, so the contract can't drift. (tauri-specta was tried and dropped: its beta TypeScript exporter refuses `serde_json::Value`, which tool inputs need.)
 - **Security rules (carried over and extended).**
   - Page input is untrusted: ids must be UUIDs, paths must be recent projects or files git lists, links must be http(s).
   - A permission answer can only name a pending request, and allowed input is always the CLI's own.

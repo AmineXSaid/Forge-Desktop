@@ -90,26 +90,6 @@ fn millis(t: SystemTime) -> u64 {
     t.duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-/// Text a person typed, from a user message's content; None for tool results,
-/// command echoes and the CLI's own injected context.
-fn typed_text(content: &Value) -> Option<String> {
-    let text = match content {
-        Value::String(s) => s.clone(),
-        Value::Array(blocks) => {
-            if blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")) {
-                return None;
-            }
-            blocks.iter().filter_map(|b| (b.get("type")?.as_str()? == "text").then(|| b.get("text")?.as_str()).flatten()).collect::<Vec<_>>().join("\n")
-        }
-        _ => return None,
-    };
-    let t = text.trim();
-    if t.is_empty() || t.starts_with('<') || t.starts_with("Caveat:") {
-        return None;
-    }
-    Some(t.to_string())
-}
-
 pub fn summarize(id: &str, text: &str, mtime: SystemTime) -> Option<Summary> {
     let mut custom = None;
     let mut summary = None;
@@ -121,7 +101,7 @@ pub fn summarize(id: &str, text: &str, mtime: SystemTime) -> Option<Summary> {
             Some("custom-title") => custom = v.get("customTitle").and_then(Value::as_str).map(String::from),
             Some("summary") => summary = v.get("summary").and_then(Value::as_str).map(String::from),
             Some("user") if first.is_none() && v.get("isMeta") != Some(&json!(true)) && v.get("isSidechain") != Some(&json!(true)) => {
-                first = v.get("message").and_then(|m| m.get("content")).and_then(typed_text);
+                first = v.get("message").and_then(|m| m.get("content")).and_then(crate::events::typed_text);
                 if branch.is_none() {
                     branch = v.get("gitBranch").and_then(Value::as_str).filter(|b| *b != "HEAD").map(String::from);
                 }

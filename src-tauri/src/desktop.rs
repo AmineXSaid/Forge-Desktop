@@ -5,45 +5,91 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use forge_core::cli::{self, Decision, Session};
+use forge_core::events::{self, Envelope, SessionEvent};
+use forge_core::settings::{self, Settings};
+use forge_core::{git, recent, sessions};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
-use crate::cli::{self, Decision, Session};
-use crate::settings::{self, Settings};
-use crate::{git, paths, recent, sessions};
+use crate::paths;
 
-#[derive(Default)]
 pub struct AppState {
     pub project: Mutex<Option<PathBuf>>,
     pub running: Mutex<HashMap<String, Arc<Session>>>,
-    events: Mutex<Events>,
+    events: Mutex<Sender<Out>>,
     cache: sessions::Cache,
 }
 
-#[derive(Default)]
-struct Events {
-    channel: Option<Channel<Value>>,
-    queue: Vec<Value>,
+enum Out {
+    Event(Envelope),
+    Attach(Channel<Vec<Envelope>>),
 }
 
-impl AppState {
-    /// An event for the window: delivered now, or kept until it attaches.
-    pub fn emit(&self, event: Value) {
-        let mut events = self.events.lock().unwrap();
-        match events.channel.as_ref() {
-            Some(c) if c.send(event.clone()).is_ok() => {}
+/// One frame: at most one IPC message to the window per 16 ms.
+const FRAME: Duration = Duration::from_millis(16);
+const MAX_QUEUED: usize = 50_000;
+
+/// The emitter: batches session events per frame, merges deltas, and keeps
+/// them while no window is attached (startup, a reload).
+fn emitter(rx: mpsc::Receiver<Out>) {
+    let mut channel: Option<Channel<Vec<Envelope>>> = None;
+    let mut queue: Vec<Envelope> = vec![];
+    loop {
+        let first = match rx.recv() {
+            Ok(o) => o,
+            Err(_) => return,
+        };
+        let mut batch = vec![];
+        let handle = |o: Out, batch: &mut Vec<Envelope>, channel: &mut Option<Channel<Vec<Envelope>>>| match o {
+            Out::Event(e) => batch.push(e),
+            Out::Attach(c) => *channel = Some(c),
+        };
+        handle(first, &mut batch, &mut channel);
+        let deadline = Instant::now() + FRAME;
+        loop {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(o) => handle(o, &mut batch, &mut channel),
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        }
+        queue.append(&mut batch);
+        if queue.is_empty() {
+            continue;
+        }
+        let out = events::coalesce(std::mem::take(&mut queue));
+        match channel.as_ref() {
+            Some(c) if c.send(out.clone()).is_ok() => {}
             _ => {
-                events.channel = None;
-                if events.queue.len() < 10_000 {
-                    events.queue.push(event);
+                channel = None;
+                queue = out;
+                if queue.len() > MAX_QUEUED {
+                    queue.drain(..queue.len() - MAX_QUEUED);
                 }
             }
         }
+    }
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        let (tx, rx) = mpsc::channel();
+        std::thread::Builder::new().name("events".into()).spawn(move || emitter(rx)).expect("the event thread starts");
+        AppState { project: Mutex::default(), running: Mutex::default(), events: Mutex::new(tx), cache: sessions::Cache::default() }
+    }
+}
+
+impl AppState {
+    pub fn emit(&self, event: Envelope) {
+        let _ = self.events.lock().unwrap().send(Out::Event(event));
     }
 
     pub fn stop_all(&self) {
@@ -74,14 +120,16 @@ fn check_id(id: &str) -> Result<(), String> {
     if cli::valid_session_id(id) { Ok(()) } else { Err("bad session id".into()) }
 }
 
+/// The window's event channel: every session's events, batched per frame.
 #[tauri::command]
-pub fn events_attach(app: AppHandle, channel: Channel<Value>) {
-    let state = state(&app);
-    let mut events = state.events.lock().unwrap();
-    for e in events.queue.drain(..) {
-        let _ = channel.send(e);
-    }
-    events.channel = Some(channel);
+pub fn events_attach(app: AppHandle, channel: Channel<Vec<Envelope>>) {
+    let _ = state(&app).events.lock().unwrap().send(Out::Attach(channel));
+}
+
+#[derive(Serialize)]
+pub struct RecentProject {
+    path: String,
+    name: String,
 }
 
 #[derive(Serialize)]
@@ -89,7 +137,7 @@ pub fn events_attach(app: AppHandle, channel: Channel<Value>) {
 pub struct Info {
     workspace: Option<String>,
     name: Option<String>,
-    recent: Vec<Value>,
+    recent: Vec<RecentProject>,
     platform: &'static str,
     version: String,
     claude: Option<String>,
@@ -104,7 +152,7 @@ pub fn app_info(app: AppHandle) -> Info {
         .folders
         .into_iter()
         .filter(|p| p.is_dir())
-        .map(|p| json!({"path": p.display().to_string(), "name": folder_name(&p)}))
+        .map(|p| RecentProject { path: p.display().to_string(), name: folder_name(&p) })
         .collect();
     let running = state(&app).running.lock().unwrap().iter().filter(|(_, s)| s.is_running()).map(|(id, _)| id.clone()).collect();
     Info {
@@ -169,11 +217,11 @@ pub async fn sessions_list(app: AppHandle) -> Result<Vec<sessions::Summary>, Str
 }
 
 #[tauri::command]
-pub async fn session_load(app: AppHandle, id: String) -> Result<Vec<Value>, String> {
+pub async fn session_load(app: AppHandle, id: String) -> Result<Vec<SessionEvent>, String> {
     check_id(&id)?;
     let cwd = project(&app)?;
     tauri::async_runtime::spawn_blocking(move || match sessions::file(&cwd, &id) {
-        Some(path) => sessions::load(&path),
+        Some(path) => sessions::load(&path).map(|m| events::replay(&m)),
         None => Ok(vec![]),
     })
     .await
@@ -237,7 +285,7 @@ pub async fn session_send(app: AppHandle, id: String, text: String, model: Optio
 pub struct Answer {
     kind: String,
     message: Option<String>,
-    answers: Option<Map<String, Value>>,
+    answers: Option<HashMap<String, String>>,
 }
 
 #[tauri::command]
@@ -248,7 +296,7 @@ pub fn session_respond(app: AppHandle, id: String, request_id: String, answer: A
         "allow" => Decision::Allow,
         "always" => Decision::AllowAlways,
         "deny" => Decision::Deny(answer.message.unwrap_or_default()),
-        "answer" => Decision::Answer(answer.answers.ok_or("no answers")?),
+        "answer" => Decision::Answer(answer.answers.ok_or("no answers")?.into_iter().map(|(q, a)| (q, Value::String(a))).collect::<Map<String, Value>>()),
         _ => return Err("unknown answer".into()),
     };
     s.respond(&request_id, decision)
@@ -354,17 +402,17 @@ pub async fn git_discard(app: AppHandle, path: String) -> Result<(), String> {
 
 /// The title bar's buttons.
 #[tauri::command]
-pub fn window_action(window: WebviewWindow, action: String) -> Result<Value, String> {
+pub fn window_action(window: WebviewWindow, action: String) -> Result<bool, String> {
     let result = match action.as_str() {
         "minimize" => window.minimize(),
         "toggleMaximize" => {
             if window.is_maximized().unwrap_or(false) { window.unmaximize() } else { window.maximize() }
         }
         "close" => window.close(),
-        "isMaximized" => return Ok(json!(window.is_maximized().unwrap_or(false))),
+        "isMaximized" => return Ok(window.is_maximized().unwrap_or(false)),
         _ => return Err("unknown window action".into()),
     };
-    result.map(|_| Value::Null).map_err(|e| e.to_string())
+    result.map(|_| window.is_maximized().unwrap_or(false)).map_err(|e| e.to_string())
 }
 
 /// An OS notification, only while the window is not focused. Capped.

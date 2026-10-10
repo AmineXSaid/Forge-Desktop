@@ -1,0 +1,119 @@
+/* Forge Desktop tokens: docs/DESIGN.md as custom properties. Components use
+   these names only; no raw colours in components. */
+
+@font-face { font-family: 'DM Sans'; src: url('/fonts/dm-sans.woff2') format('woff2'); font-weight: 100 1000; font-style: normal; font-display: block; }
+@font-face { font-family: 'DM Sans'; src: url('/fonts/dm-sans-italic.woff2') format('woff2'); font-weight: 100 1000; font-style: italic; font-display: swap; }
+@font-face { font-family: 'Source Serif 4'; src: url('/fonts/source-serif-4.woff2') format('woff2'); font-weight: 200 900; font-display: swap; }
+@font-face { font-family: 'JetBrains Mono'; src: url('/fonts/jetbrains-mono.woff2') format('woff2'); font-weight: 100 800; font-display: swap; }
+
+:root {
+  /* faces */
+  --font-sans: 'DM Sans', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --font-serif: 'Source Serif 4', Georgia, serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Mono', Consolas, monospace;
+
+  /* surfaces */
+  --canvas: #f6f5f4;              /* Paper Warmth: the page */
+  --card: #ffffff;                /* Pure White: on the page */
+  --inset: rgba(0, 0, 0, 0.028);  /* a quiet well inside a card */
+  --hover: rgba(0, 0, 0, 0.04);
+  --press: rgba(0, 0, 0, 0.07);
+  --line: rgba(0, 0, 0, 0.08);    /* the hairline */
+  --line-strong: rgba(0, 0, 0, 0.14);
+
+  /* ink: one colour, alpha for hierarchy */
+  --ink: rgba(0, 0, 0, 0.95);
+  --ink-2: rgba(0, 0, 0, 0.78);
+  --ink-3: rgba(0, 0, 0, 0.6);
+  --ink-4: rgba(0, 0, 0, 0.4);
+  --ink-5: rgba(0, 0, 0, 0.2);
+  --graphite: #615d59;            /* warm secondary prose */
+
+  /* the one action */
+  --blue: #0075de;
+  --blue-hover: #0068c6;
+  --blue-text: #ffffff;
+  --sky-tint: #e6f3fe;            /* ghost action background */
+  --focus: rgba(0, 117, 222, 0.35);
+
+  /* accent cast, used as meaning */
+  --peach: #f6d5b8;               /* hero highlight pill */
+  --marigold: #ffb110;            /* needs you */
+  --coral: #f64932;               /* error */
+  --sky: #62aef0;                 /* working */
+  --signal-blue: #097fe8;
+  --midnight: #02093a;            /* plan */
+  --mocha: #b18164;
+  --saffron: #e89d01;
+  --status-working-bg: rgba(98, 174, 240, 0.18);
+  --status-working-fg: #0a5ca8;
+  --status-needs-bg: rgba(255, 177, 16, 0.2);
+  --status-needs-fg: #8a5600;
+  --status-error-bg: rgba(246, 73, 50, 0.12);
+  --status-error-fg: #c42a14;
+  --status-plan-bg: #02093a;
+  --status-plan-fg: #ffffff;
+  --add-bg: rgba(46, 160, 67, 0.12);
+  --add-fg: #1f7a35;
+  --del-bg: rgba(246, 73, 50, 0.1);
+  --del-fg: #c42a14;
+
+  /* shape */
+  --r-small: 4px;
+  --r-button: 8px;
+  --r-card: 12px;
+  --r-pill: 9999px;
+
+  /* elevation: floating things only (menus, palette, toasts) */
+  --float: 0px 0.7px 1.462px 0px rgba(0, 0, 0, 0.015), 0px 3px 9px 0px rgba(0, 0, 0, 0.03), 0 0 0 1px var(--line), 0 12px 32px rgba(0, 0, 0, 0.08);
+
+  /* motion */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --t: 200ms;
+
+  /* sizes */
+  --titlebar: 40px;
+  --sidebar-w: 260px;
+  --changes-w: 480px;
+  --column: 760px;
+
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --canvas: #191918;
+  --card: #202020;
+  --inset: rgba(255, 255, 255, 0.035);
+  --hover: rgba(255, 255, 255, 0.05);
+  --press: rgba(255, 255, 255, 0.09);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.15);
+  --ink: rgba(255, 255, 255, 0.94);
+  --ink-2: rgba(255, 255, 255, 0.78);
+  --ink-3: rgba(255, 255, 255, 0.6);
+  --ink-4: rgba(255, 255, 255, 0.4);
+  --ink-5: rgba(255, 255, 255, 0.2);
+  --graphite: #b4aea8;
+  --sky-tint: rgba(0, 117, 222, 0.2);
+  --focus: rgba(64, 156, 255, 0.45);
+  --blue-hover: #1a85e8;
+  --peach: #5a4636;
+  --status-working-bg: rgba(98, 174, 240, 0.18);
+  --status-working-fg: #8cc4f5;
+  --status-needs-bg: rgba(255, 177, 16, 0.18);
+  --status-needs-fg: #ffc85a;
+  --status-error-bg: rgba(246, 73, 50, 0.18);
+  --status-error-fg: #ff8a78;
+  --status-plan-bg: #c9cdf0;
+  --status-plan-fg: #02093a;
+  --add-bg: rgba(63, 185, 80, 0.16);
+  --add-fg: #6fd389;
+  --del-bg: rgba(246, 73, 50, 0.16);
+  --del-fg: #ff8a78;
+  --float: 0 0 0 1px var(--line), 0 12px 32px rgba(0, 0, 0, 0.45);
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --t: 0ms; }
+}
