@@ -16,6 +16,7 @@ mod recent;
 mod sidecar;
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 use tauri::ipc::Channel;
@@ -214,13 +215,18 @@ pub fn run() {
                 .initialization_script(INIT_SCRIPT)
                 .build()?;
             // A side-bar view is "hidden" when it is not on screen, not when it
-            // lacks focus: here that is a minimised window.
+            // lacks focus: here that is a minimised window. Windows sends a
+            // Resized event for every step of a drag; only a change of
+            // visibility reaches the host, so a resize does no I/O on the UI thread.
             let visibility = handle.clone();
             let watched = window.clone();
+            let was_visible = AtomicBool::new(true);
             window.on_window_event(move |event| {
                 if let WindowEvent::Resized(_) = event {
                     let visible = !watched.is_minimized().unwrap_or(false);
-                    visibility.state::<Bridge>().frame_to_host(serde_json::json!({"$forge": "visibility", "visible": visible}));
+                    if was_visible.swap(visible, Ordering::Relaxed) != visible {
+                        visibility.state::<Bridge>().frame_to_host(serde_json::json!({"$forge": "visibility", "visible": visible}));
+                    }
                 }
             });
             choose_project(&handle);
