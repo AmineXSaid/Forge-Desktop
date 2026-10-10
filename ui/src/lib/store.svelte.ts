@@ -197,8 +197,6 @@ class App {
   list = $state<Summary[]>([]);
   sessions = new SvelteMap<string, SessionState>();
   current = $state<string | null>(null);
-  view = $state<'chat' | 'settings'>('chat');
-  settingsTab = $state('general');
   sidebar = $state(true);
   changes = $state(false);
   git = $state<GitStatus>({ isRepo: false, branch: null, files: [] });
@@ -256,7 +254,6 @@ class App {
   }
 
   async open(id: string) {
-    this.view = 'chat';
     this.current = id;
     const s = this.session(id);
     if (s.loaded === 'no' && !s.items.length) {
@@ -269,7 +266,6 @@ class App {
   }
 
   newSession() {
-    this.view = 'chat';
     this.current = null;
   }
 

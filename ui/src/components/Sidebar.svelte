@@ -4,6 +4,7 @@
   import { call, type Summary } from '../lib/ipc';
   import { openMenu } from '../lib/menu.svelte';
   import { when, bucket } from '../lib/time';
+  import { settingsWindow } from '../lib/settings.svelte';
 
   let editing = $state<string | null>(null);
   let editValue = $state('');
@@ -72,7 +73,7 @@
             onkeydown={(e) => { if (e.key === 'Enter') commit(r.id); if (e.key === 'Escape') editing = null; }}
             onblur={() => commit(r.id)} /></div>
         {:else}
-          <div class="row" class:sel={app.current === r.id && app.view === 'chat'} role="button" tabindex="0" title={r.title}
+          <div class="row" class:sel={app.current === r.id} role="button" tabindex="0" title={r.title}
             onclick={() => app.open(r.id)} onkeydown={(e) => e.key === 'Enter' && app.open(r.id)}>
             <span class="t">{r.title}</span>
             {#if s?.status === 'needs'}<span class="pill needs">Needs you</span>
@@ -87,7 +88,7 @@
     {/each}
   </nav>
 
-  <button class="who" onclick={() => { app.view = 'settings'; app.settingsTab = 'providers'; }}>
+  <button class="who" onclick={() => settingsWindow.show('providers')}>
     <span class="mark" class:local={!!profile}><Icon name={profile ? 'cpu' : 'sparkle'} size={14} /></span>
     <span class="who-text">
       <span class="l1">{profile ? profile.name : 'Claude account'}</span>

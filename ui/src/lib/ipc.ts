@@ -98,6 +98,8 @@ export interface Commands {
   cc_settings_set: [{ scope: Scope; key: string; value: unknown }, void];
   /** Shows a native confirmation with the command; false when the person cancels. */
   hook_add: [{ scope: Scope; event: string; matcher: string; command: string; timeout: number | null }, boolean];
+  /** Shows a native confirmation with the server's command; false when the person cancels. */
+  mcp_approve: [{ scope: Scope; name: string }, boolean];
   hook_remove: [{ scope: Scope; event: string; group: number; index: number }, void];
   memory_read: [{ which: Scope }, string];
   memory_write: [{ which: Scope; text: string }, void];

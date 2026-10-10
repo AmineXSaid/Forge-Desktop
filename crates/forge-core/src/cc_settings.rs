@@ -104,6 +104,12 @@ enum Rule {
     Int(i64, i64),
     List(usize),
     Env,
+    /// One variable, `env.NAME`.
+    EnvVar,
+    /// A list that may only lose entries (approvals that make the CLI run something).
+    Shrink,
+    /// Only `false`: turning it on approves commands, which needs a confirmation.
+    FalseOnly,
 }
 
 /// The keys the window may write, as dotted paths.
@@ -125,6 +131,12 @@ fn rule_for(key: &str) -> Option<Rule> {
         "permissions.allow" | "permissions.ask" | "permissions.deny" | "permissions.additionalDirectories" | "sandbox.excludedCommands"
         | "sandbox.network.allowUnixSockets" | "companyAnnouncements" => Rule::List(1000),
         "env" => Rule::Env,
+        k if k.starts_with("env.") => Rule::EnvVar,
+        // Project MCP servers (.mcp.json): rejecting is free; approving runs the
+        // server's command, so it goes through `approve_mcp` after a confirmation.
+        "disabledMcpjsonServers" => Rule::List(1000),
+        "enabledMcpjsonServers" => Rule::Shrink,
+        "enableAllProjectMcpServers" => Rule::FalseOnly,
         _ => return None,
     })
 }
@@ -135,7 +147,26 @@ const ENV_REFUSED: &[&str] = &[
     "PERL5OPT", "RUBYOPT", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "PATH", "PATHEXT", "COMSPEC", "SHELL", "GIT_SSH_COMMAND", "GIT_EXEC_PATH",
 ];
 
-fn check(rule: &Rule, value: &Value) -> Result<(), String> {
+fn check_env_var(k: &str, v: &Value) -> Result<(), String> {
+    let name_ok = !k.is_empty()
+        && k.len() <= 100
+        && k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !name_ok {
+        return Err(format!("`{k}` is not a variable name"));
+    }
+    let upper = k.to_ascii_uppercase();
+    if ENV_REFUSED.contains(&upper.as_str()) || upper.starts_with("DYLD_") {
+        return Err(format!("{k} can make tools run other code, so Forge does not set it; edit settings.json yourself if you need it"));
+    }
+    if !v.as_str().is_some_and(|s| s.len() <= 8192 && !s.chars().any(|c| c.is_control())) {
+        return Err(format!("{k}: the value must be one line of text"));
+    }
+    Ok(())
+}
+
+/// `current`: the value the file holds now, for rules that compare with it.
+fn check(rule: &Rule, key: &str, value: &Value, current: Option<&Value>) -> Result<(), String> {
     let ok = match (rule, value) {
         (Rule::Str(n), Value::String(s)) => s.len() <= *n && !s.chars().any(|c| c.is_control() && c != '\n'),
         (Rule::Bool, Value::Bool(_)) => true,
@@ -146,23 +177,16 @@ fn check(rule: &Rule, value: &Value) -> Result<(), String> {
         }
         (Rule::Env, Value::Object(vars)) => {
             for (k, v) in vars {
-                let name_ok = !k.is_empty()
-                    && k.len() <= 100
-                    && k.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                    && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-                if !name_ok {
-                    return Err(format!("`{k}` is not a variable name"));
-                }
-                let upper = k.to_ascii_uppercase();
-                if ENV_REFUSED.contains(&upper.as_str()) || upper.starts_with("DYLD_") {
-                    return Err(format!("{k} can make tools run other code, so Forge does not set it; edit settings.json yourself if you need it"));
-                }
-                if !v.as_str().is_some_and(|s| s.len() <= 8192 && !s.chars().any(|c| c.is_control())) {
-                    return Err(format!("{k}: the value must be one line of text"));
-                }
+                check_env_var(k, v)?;
             }
             vars.len() <= 500
         }
+        (Rule::EnvVar, v) => return check_env_var(&key[4..], v),
+        (Rule::Shrink, Value::Array(items)) => {
+            let now: Vec<&Value> = current.and_then(Value::as_array).map(|a| a.iter().collect()).unwrap_or_default();
+            items.iter().all(|i| now.contains(&i))
+        }
+        (Rule::FalseOnly, Value::Bool(false)) => true,
         _ => false,
     };
     if ok { Ok(()) } else { Err("that value does not fit this setting".into()) }
@@ -171,12 +195,16 @@ fn check(rule: &Rule, value: &Value) -> Result<(), String> {
 /// Set (or with `null`, remove) one dotted key in one scope's file.
 pub fn set(scope: Scope, project: Option<&Path>, key: &str, value: Value) -> Result<(), String> {
     let rule = rule_for(key).ok_or_else(|| format!("Forge does not write `{key}`"))?;
-    if !value.is_null() {
-        check(&rule, &value)?;
-    }
     let file = path(scope, project)?;
     let mut root = read_file(&file)?;
     let parts: Vec<&str> = key.split('.').collect();
+    if !value.is_null() {
+        let mut current = root.get(parts[0]);
+        for p in &parts[1..] {
+            current = current.and_then(|v| v.get(*p));
+        }
+        check(&rule, key, &value, current)?;
+    }
     set_path(&mut root, &parts, value);
     write_file(&file, &root)
 }
@@ -200,6 +228,32 @@ fn set_path(map: &mut Map<String, Value>, parts: &[&str], value: Value) {
     if inner.is_empty() {
         map.remove(first);
     }
+}
+
+/// A project MCP server from `.mcp.json`, by name: its command line (or URL),
+/// for the confirmation the app shell shows before `approve_mcp`.
+pub fn project_mcp_target(project: &Path, name: &str) -> Result<String, String> {
+    let mcp = fs::read_to_string(project.join(".mcp.json")).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let mut found = vec![];
+    mcp_from(mcp.as_ref().and_then(|m| m.get("mcpServers")), "project", &mut found);
+    found.into_iter().find(|s| s.name == name).map(|s| s.target).ok_or_else(|| "no such server in .mcp.json".into())
+}
+
+/// Approve a project MCP server: the CLI will start it. Called only after the
+/// person confirmed the command it runs.
+pub fn approve_mcp(scope: Scope, project: Option<&Path>, name: &str) -> Result<(), String> {
+    project_mcp_target(project.ok_or("no project is open")?, name)?;
+    let file = path(scope, project)?;
+    let mut root = read_file(&file)?;
+    let list = root.entry("enabledMcpjsonServers").or_insert_with(|| json!([]));
+    let Some(list) = list.as_array_mut() else { return Err("`enabledMcpjsonServers` is not a list".into()) };
+    if !list.iter().any(|v| v == name) {
+        list.push(json!(name));
+    }
+    if let Some(Value::Array(rejected)) = root.get_mut("disabledMcpjsonServers") {
+        rejected.retain(|v| v != name);
+    }
+    write_file(&file, &root)
 }
 
 pub const HOOK_EVENTS: &[&str] = &["PreToolUse", "PostToolUse", "UserPromptSubmit", "Stop", "SubagentStop", "Notification", "SessionStart", "SessionEnd", "PreCompact"];
@@ -462,6 +516,36 @@ mod tests {
         assert!(set(Scope::Project, Some(&p), "env", json!({"HTTPS_PROXY": "http://proxy:8080", "MAX_THINKING_TOKENS": "8000"})).is_ok());
         assert!(set(Scope::Project, Some(&p), "permissions.allow", json!(["Bash(npm test)", ""])).is_err());
         assert!(set(Scope::Project, None, "language", json!("french")).is_err(), "no project, no project scope");
+        let _ = fs::remove_dir_all(&p);
+    }
+
+    #[test]
+    fn single_variables_and_mcp_approvals() {
+        let p = tmp("envvar");
+        set(Scope::Local, Some(&p), "env.HTTPS_PROXY", json!("http://proxy:8080")).unwrap();
+        set(Scope::Local, Some(&p), "env.NO_PROXY", json!("localhost")).unwrap();
+        assert!(set(Scope::Local, Some(&p), "env.NODE_OPTIONS", json!("--require x")).is_err());
+        assert!(set(Scope::Local, Some(&p), "env.Path", json!("x")).is_err(), "case-insensitive");
+        assert!(set(Scope::Local, Some(&p), "env.A-B", json!("x")).is_err());
+        assert!(set(Scope::Local, Some(&p), "env.X", json!(1)).is_err());
+        set(Scope::Local, Some(&p), "env.NO_PROXY", Value::Null).unwrap();
+        assert_eq!(read_all(Some(&p)).local["env"], json!({"HTTPS_PROXY": "http://proxy:8080"}));
+
+        fs::write(p.join(".mcp.json"), r#"{"mcpServers": {"fs": {"command": "npx", "args": ["-y", "fs"]}, "db": {"command": "db-mcp"}}}"#).unwrap();
+        assert!(set(Scope::Local, Some(&p), "enabledMcpjsonServers", json!(["fs"])).is_err(), "approving runs a command");
+        assert!(set(Scope::Local, Some(&p), "enableAllProjectMcpServers", json!(true)).is_err());
+        assert!(set(Scope::Local, Some(&p), "enableAllProjectMcpServers", json!(false)).is_ok());
+        set(Scope::Local, Some(&p), "disabledMcpjsonServers", json!(["fs"])).unwrap();
+        assert_eq!(project_mcp_target(&p, "fs").unwrap(), "npx -y fs");
+        assert!(approve_mcp(Scope::Local, Some(&p), "nope").is_err());
+        approve_mcp(Scope::Local, Some(&p), "fs").unwrap();
+        approve_mcp(Scope::Local, Some(&p), "db").unwrap();
+        let v = read_all(Some(&p)).local;
+        assert_eq!(v["enabledMcpjsonServers"], json!(["fs", "db"]));
+        assert_eq!(v["disabledMcpjsonServers"], json!([]), "approving takes it off the rejected list");
+        // Removing an approval is fine; adding one back this way is not.
+        set(Scope::Local, Some(&p), "enabledMcpjsonServers", json!(["db"])).unwrap();
+        assert!(set(Scope::Local, Some(&p), "enabledMcpjsonServers", json!(["db", "fs"])).is_err());
         let _ = fs::remove_dir_all(&p);
     }
 

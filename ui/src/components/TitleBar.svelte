@@ -3,6 +3,7 @@
   import { app, toast } from '../lib/store.svelte';
   import { call } from '../lib/ipc';
   import { openMenu } from '../lib/menu.svelte';
+  import { settingsWindow } from '../lib/settings.svelte';
 
   const add = $derived(app.git.files.reduce((n, f) => n + f.additions, 0));
   const del = $derived(app.git.files.reduce((n, f) => n + f.deletions, 0));
@@ -35,14 +36,14 @@
   <div class="drag" data-tauri-drag-region ondblclick={() => win('toggleMaximize')} role="presentation"></div>
 
   {#if app.git.isRepo}
-    <button class="tb" class:on={app.changes && app.view === 'chat'} title="Changes (Ctrl+Shift+D)"
-      onclick={() => { if (app.view !== 'chat') { app.view = 'chat'; app.changes = true; } else app.changes = !app.changes; }}>
+    <button class="tb" class:on={app.changes} title="Changes (Ctrl+Shift+D)"
+      onclick={() => (app.changes = !app.changes)}>
       <Icon name="diff" />
       <span>Changes</span>
       {#if app.git.files.length}<span class="counts"><span class="add">+{add}</span><span class="del">−{del}</span></span>{/if}
     </button>
   {/if}
-  <button class="icon-btn" class:on={app.view === 'settings'} title="Settings (Ctrl+,)" onclick={() => (app.view = app.view === 'settings' ? 'chat' : 'settings')}>
+  <button class="icon-btn" class:on={settingsWindow.open} title="Settings (Ctrl+,)" onclick={() => settingsWindow.show()}>
     <Icon name="gear" />
   </button>
 

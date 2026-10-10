@@ -2,7 +2,7 @@
 // streamed reply with a permission prompt, git changes. Only loaded in dev
 // builds outside Tauri (see ipc.ts); never part of the app.
 
-import type { Backend, Envelope, SessionEvent, Settings } from './ipc';
+import type { Backend, CcSettings, Envelope, Scope, SessionEvent, Settings } from './ipc';
 
 const now = Date.now();
 const H = 3600_000;
@@ -53,6 +53,61 @@ const files = [
   { path: 'docs/genesis-redesign.html', originalPath: null, status: 'untracked' as const, additions: 1156, deletions: 0, binary: false },
 ];
 
+// Claude Code's settings files, one object per scope.
+const cc: CcSettings = {
+  user: {
+    model: 'opus',
+    language: 'english',
+    permissions: { allow: ['Read', 'Bash(git status)'], deny: ['Bash(rm -rf:*)'] },
+    env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-5-5', HTTPS_PROXY: 'http://proxy.corp:8080', GITHUB_TOKEN: 'ghp_demo' },
+    hooks: { Notification: [{ matcher: '', hooks: [{ type: 'command', command: 'powershell -c "[console]::beep()"' }] }] },
+  },
+  project: {
+    model: 'sonnet',
+    respectGitignore: true,
+    permissions: { defaultMode: 'acceptEdits', allow: ['Bash(cargo test:*)', 'Bash(pnpm test)'], ask: ['Bash(git push:*)'] },
+    env: { RUST_LOG: 'info', HTTPS_PROXY: 'http://proxy.team:3128' },
+    hooks: { PostToolUse: [{ matcher: 'Edit|Write', hooks: [{ type: 'command', command: 'cargo fmt', timeout: 30 }] }] },
+    enabledMcpjsonServers: ['docs'],
+  },
+  local: { sandbox: { enabled: true, excludedCommands: ['docker'] }, effortLevel: 'high' },
+  hasProject: true,
+  errors: [],
+};
+const memory: Record<Scope, string> = {
+  user: '# My preferences\n\n- Explain the plan before large changes.\n- British spelling.\n',
+  project: '# kryptonite\n\nRust workspace. Run `cargo test --workspace` before saying you are done.\n\n## Style\n- No unwrap() outside tests.\n- Keep functions short.\n',
+  local: '',
+};
+const ext = {
+  skills: [
+    { name: 'review', description: 'Review a diff for correctness bugs and missing tests', scope: 'project' as const, path: 'C:\\dev\\kryptonite\\.claude\\skills\\review\\SKILL.md' },
+    { name: 'release-notes', description: 'Draft release notes from the commits since the last tag', scope: 'user' as const, path: 'C:\\Users\\you\\.claude\\skills\\release-notes\\SKILL.md' },
+  ],
+  agents: [{ name: 'test-runner', description: 'Runs the tests and reports failures with the smallest repro', scope: 'project' as const, path: 'C:\\dev\\kryptonite\\.claude\\agents\\test-runner.md' }],
+  commands: [
+    { name: 'ship', description: 'Bump the version, tag and push', scope: 'project' as const, path: 'C:\\dev\\kryptonite\\.claude\\commands\\ship.md' },
+    { name: 'standup', description: '', scope: 'user' as const, path: 'C:\\Users\\you\\.claude\\commands\\standup.md' },
+  ],
+  mcpServers: [
+    { name: 'docs', transport: 'http', target: 'https://docs.example.com/mcp', scope: 'project' as const },
+    { name: 'postgres', transport: 'stdio', target: 'npx -y @modelcontextprotocol/server-postgres postgres://localhost/dev', scope: 'project' as const },
+    { name: 'github', transport: 'http', target: 'https://api.githubcopilot.com/mcp/', scope: 'user' as const },
+  ],
+};
+
+function setPath(obj: Record<string, any>, parts: string[], value: unknown) {
+  const [first, ...rest] = parts;
+  if (!rest.length) {
+    if (value === null) delete obj[first];
+    else obj[first] = value;
+    return;
+  }
+  if (typeof obj[first] !== 'object' || obj[first] === null || Array.isArray(obj[first])) obj[first] = {};
+  setPath(obj[first], rest, value);
+  if (!Object.keys(obj[first]).length) delete obj[first];
+}
+
 export function mockBackend(): Backend {
   let emit: (b: Envelope[]) => void = () => {};
   const send = (session: string, events: SessionEvent[], gap = 40) =>
@@ -99,6 +154,32 @@ export function mockBackend(): Backend {
       tooLargeOrBinary: false,
     }),
     window_action: () => false,
+    cc_settings_get: () => structuredClone(cc),
+    cc_settings_set: ({ scope, key, value }: { scope: Scope; key: string; value: unknown }) => {
+      if (/^env\.(NODE_OPTIONS|PATH|LD_PRELOAD)$/i.test(key)) throw new Error(`${key.slice(4)} can make tools run other code, so Forge does not set it`);
+      setPath(cc[scope], key.split('.'), value);
+    },
+    hook_add: ({ scope, event, matcher, command, timeout }) => {
+      if (!confirm(`Claude Code will run this command on ${event}:\n\n${command}`)) return false;
+      const hooks = (cc[scope as Scope].hooks ??= {});
+      (hooks[event] ??= []).push({ matcher, hooks: [{ type: 'command', command, ...(timeout ? { timeout } : {}) }] });
+      return true;
+    },
+    hook_remove: ({ scope, event, group, index }) => {
+      const groups = cc[scope as Scope].hooks?.[event];
+      groups?.[group]?.hooks.splice(index, 1);
+      if (groups?.[group]?.hooks.length === 0) groups.splice(group, 1);
+    },
+    mcp_approve: ({ scope, name }) => {
+      const s = cc[scope as Scope];
+      s.enabledMcpjsonServers = [...(s.enabledMcpjsonServers ?? []), name];
+      s.disabledMcpjsonServers = (s.disabledMcpjsonServers ?? []).filter((n: string) => n !== name);
+      return true;
+    },
+    memory_read: ({ which }) => memory[which as Scope],
+    memory_write: ({ which, text }) => { memory[which as Scope] = text; },
+    extensions_list: () => ext,
+    open_file: () => {},
   };
 
   return {

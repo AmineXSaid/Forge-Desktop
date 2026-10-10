@@ -503,6 +503,29 @@ pub async fn hook_add(app: AppHandle, scope: String, event: String, matcher: Str
     Ok(true)
 }
 
+/// Approving a project MCP server makes the CLI start its command, so the
+/// person confirms that command natively first.
+#[tauri::command]
+pub async fn mcp_approve(app: AppHandle, scope: String, name: String) -> Result<bool, String> {
+    let scope = cc_settings::Scope::parse(&scope)?;
+    let project = open_project_dir(&app).ok_or("no project is open")?;
+    let target = cc_settings::project_mcp_target(&project, &name)?;
+    use tauri_plugin_dialog::{MessageDialogButtons, MessageDialogKind};
+    let ok = app
+        .dialog()
+        .message(format!("This project's .mcp.json defines the server \"{name}\". Claude Code will start it with:\n\n{target}\n\nOnly approve servers you trust."))
+        .title("Approve an MCP server?")
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom("Approve".into(), "Cancel".into()))
+        .blocking_show();
+    if !ok {
+        return Ok(false);
+    }
+    paths::log("info", &format!("MCP server approved: {name} ({target})"));
+    cc_settings::approve_mcp(scope, Some(&project), &name)?;
+    Ok(true)
+}
+
 #[tauri::command]
 pub fn hook_remove(app: AppHandle, scope: String, event: String, group: usize, index: usize) -> Result<(), String> {
     let scope = cc_settings::Scope::parse(&scope)?;

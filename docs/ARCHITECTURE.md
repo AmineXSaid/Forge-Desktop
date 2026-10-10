@@ -161,7 +161,7 @@ Everything else (sessions, providers, the UI, Windows integration) is Rust plus 
   - **Thread:** a 760px column. Tool calls are one compact row each and open to show a diff or output. Permission, question and plan cards sit inline.
   - **Composer:** a white 12px card with mode and model pills, `@` file mentions, `/` commands, and image paste.
   - **Changes pane:** files changed against HEAD with a unified diff, Discard, and Show in Explorer.
-  - **Settings:** a left nav with content aligned left: General, Providers, Sessions, Permissions, MCP, About.
+  - **Settings:** a modal window over the app (dimmed backdrop, Esc or a click outside closes it) with a searchable left nav: General, Models, Providers, Permissions, Environment, Memory & Rules, Hooks, MCP Servers, Skills, Agents, Slash Commands, Sandbox, Network, About. Claude Code's own settings files are edited in place through `cc_settings.rs`, with a User / Workspace / Local scope switch; each value says where it comes from (local > workspace > user) and can be reset. Anything that makes the CLI run a command (a hook, approving a project MCP server) is confirmed natively with the exact command first; the page can only remove such approvals.
   - **Onboarding:** install Claude Code if it's missing (one click runs the official installer, with progress) → connect a provider → choose a folder.
   - **Command palette:** Ctrl+K.
 

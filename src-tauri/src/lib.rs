@@ -115,6 +115,7 @@ pub fn run() {
             desktop::cc_settings_set,
             desktop::hook_add,
             desktop::hook_remove,
+            desktop::mcp_approve,
             desktop::memory_read,
             desktop::memory_write,
             desktop::extensions_list,
