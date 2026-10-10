@@ -4,18 +4,20 @@
   "version": "0.1.0",
   "identifier": "com.msaid.forge",
   "build": {
-    "frontendDist": "../stage/web"
+    "frontendDist": "../web"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self'; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": [
+      "nsis"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -23,11 +25,10 @@
       "icons/icon.png",
       "icons/icon.ico"
     ],
-    "resources": {
-      "../stage/forge/": "forge/"
-    },
     "windows": {
-      "webviewInstallMode": { "type": "downloadBootstrapper" }
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
     }
   }
 }

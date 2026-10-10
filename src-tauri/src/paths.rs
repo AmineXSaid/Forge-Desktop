@@ -1,8 +1,7 @@
 //! Where things are, and the shell's log.
 //!
-//! - resources: the staged Forge root (`stage/forge`, bundled as `forge/`);
-//! - data: `%APPDATA%\com.msaid.forge` (settings.json, state.json, recent.json);
-//! - logs: `%LOCALAPPDATA%\com.msaid.forge\logs` (forge-desktop.log, forge-host.log).
+//! - data: `%APPDATA%\com.msaid.forge` (settings.json, recent.json);
+//! - logs: `%LOCALAPPDATA%\com.msaid.forge\logs` (forge-desktop.log, with the CLI's stderr).
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -16,21 +15,13 @@ static LOG: OnceLock<Mutex<Option<fs::File>>> = OnceLock::new();
 const LOG_LIMIT: u64 = 5 * 1024 * 1024;
 
 pub struct Dirs {
-    pub resources: PathBuf,
     pub data: PathBuf,
     pub logs: PathBuf,
 }
 
 pub fn dirs(app: &AppHandle) -> Result<Dirs, String> {
     let path = app.path();
-    let resources = match std::env::var_os("FORGE_RESOURCES").map(PathBuf::from) {
-        Some(p) => p,
-        // `tauri dev` runs from the source tree: use the staged copy in place.
-        None if cfg!(debug_assertions) => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("stage").join("forge"),
-        None => path.resource_dir().map_err(|e| e.to_string())?.join("forge"),
-    };
     Ok(Dirs {
-        resources,
         data: path.app_data_dir().map_err(|e| e.to_string())?,
         logs: path.app_log_dir().map_err(|e| e.to_string())?,
     })
