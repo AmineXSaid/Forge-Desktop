@@ -259,6 +259,7 @@ impl Session {
                 let tool = request.get("tool_name").and_then(Value::as_str).unwrap_or_default().to_string();
                 let input = request.get("input").cloned().unwrap_or(json!({}));
                 let suggestions = request.get("permission_suggestions").cloned().unwrap_or(Value::Null);
+                log::write("info", &format!("{}: asks to use {tool} ({request_id})", self.id));
                 // Recorded before the window hears of it, so an instant answer finds it.
                 self.pending.lock().unwrap().insert(request_id.clone(), Pending { tool: tool.clone(), input: input.clone(), suggestions: suggestions.clone() });
                 self.emit(sink, SessionEvent::Permission {
@@ -331,6 +332,12 @@ impl Session {
     /// Answer a permission prompt the CLI is waiting on.
     pub fn respond(&self, request_id: &str, decision: Decision) -> Result<(), String> {
         let pending = self.pending.lock().unwrap().remove(request_id).ok_or("no such prompt is waiting")?;
+        log::write("info", &format!("{}: {} answered: {}", self.id, pending.tool, match &decision {
+            Decision::Allow => "allow",
+            Decision::AllowAlways => "allow always",
+            Decision::Deny(_) => "deny",
+            Decision::Answer(_) => "answers",
+        }));
         let response = match build_response(&pending, decision) {
             Ok(r) => r,
             Err(e) => {

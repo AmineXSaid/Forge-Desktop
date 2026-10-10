@@ -64,7 +64,7 @@ fn prompt_allow_write_save_and_resume() {
         session_id: "6f1d3c2a-0b9e-4c11-8a7d-2e5f9b0c1d42".into(),
         resume,
         model: Some("claude-sonnet-4-5".into()),
-        permission_mode: None,
+        permission_mode: Some("default".into()),
         env: vec![
             ("HOME".into(), home.display().to_string()),
             ("USERPROFILE".into(), home.display().to_string()),
@@ -84,6 +84,9 @@ fn prompt_allow_write_save_and_resume() {
     });
     let s = Session::start(options(false), sink).unwrap();
     s.send(&format!("write hello in {}", ws.display())).unwrap();
+    // With nonessential traffic off the CLI would default to `auto`; the mode we pass wins.
+    let started = wait_for(&rx, "the CLI to start", |e| matches!(e, SessionEvent::Started { .. }));
+    assert_eq!(started, SessionEvent::Started { model: Some("claude-sonnet-4-5".into()), mode: Some("default".into()) });
     let SessionEvent::Permission { request_id, tool, .. } = wait_for(&rx, "the permission prompt", |e| matches!(e, SessionEvent::Permission { .. })) else { unreachable!() };
     assert_eq!(tool, "Write");
     assert!(!ws.join("hello.txt").exists(), "nothing is written before the answer");

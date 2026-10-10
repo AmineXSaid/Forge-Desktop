@@ -107,6 +107,7 @@ pub fn run() {
             desktop::git_diff,
             desktop::git_discard,
             desktop::window_action,
+            desktop::window_ready,
             desktop::notify,
             desktop::open_url,
             desktop::reveal,
@@ -115,13 +116,26 @@ pub fn run() {
             let handle = app.handle().clone();
             forge_core::log::init(&log_dir_for(&handle));
             paths::log("info", &format!("Forge Desktop {} starting", handle.package_info().version));
-            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("Forge")
                 .inner_size(1180.0, 800.0)
                 .min_inner_size(760.0, 520.0)
                 // The page draws its own title bar.
                 .decorations(false)
+                // Shown by the page once it has painted (window_ready).
+                .visible(false)
+                .background_color(tauri::window::Color(0xf6, 0xf5, 0xf4, 0xff))
                 .build()?;
+            // If the page never says it is ready (a broken page, a slow disk),
+            // show the window anyway rather than leave an invisible app.
+            let late = window.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                if !late.is_visible().unwrap_or(true) {
+                    paths::log("warn", "the page did not report ready; showing the window");
+                    let _ = late.show();
+                }
+            });
             choose_project(&handle);
             Ok(())
         })
@@ -134,4 +148,49 @@ pub fn run() {
             handle.state::<AppState>().stop_all();
         }
     });
+}
+
+#[cfg(test)]
+mod contract {
+    //! The UI's TypeScript contract (`ui/src/lib/ipc.ts`) must name every
+    //! command this app registers and every kind of session event it sends.
+
+    fn read(rel: &str) -> String {
+        std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)).unwrap()
+    }
+
+    #[test]
+    fn every_command_is_typed_in_the_ui() {
+        let ipc = read("../ui/src/lib/ipc.ts");
+        let lib = read("src/lib.rs");
+        let handler = &lib[lib.find("generate_handler![").unwrap()..];
+        let handler = &handler[..handler.find("])").unwrap()];
+        let names: Vec<&str> = handler.split("desktop::").skip(1).map(|s| s.split(',').next().unwrap().trim()).collect();
+        assert!(names.len() > 20, "found {names:?}");
+        for n in names {
+            assert!(ipc.contains(&format!("  {n}: [")), "ui/src/lib/ipc.ts has no type for the command `{n}`");
+        }
+    }
+
+    #[test]
+    fn every_session_event_kind_is_typed_in_the_ui() {
+        let ipc = read("../ui/src/lib/ipc.ts");
+        let events = read("../crates/forge-core/src/events.rs");
+        let body = &events[events.find("pub enum SessionEvent {").unwrap()..];
+        let body = &body[..body.find("\n}").unwrap()];
+        let mut kinds = vec![];
+        for line in body.lines().skip(1) {
+            let t = line.trim_start();
+            if line.starts_with("    ") && !line.starts_with("     ") && t.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+                let name: String = t.chars().take_while(|c| c.is_alphanumeric()).collect();
+                let mut camel = name.clone();
+                camel[..1].make_ascii_lowercase();
+                kinds.push(camel);
+            }
+        }
+        assert!(kinds.len() >= 15, "found {kinds:?}");
+        for k in kinds {
+            assert!(ipc.contains(&format!("kind: '{k}'")), "ui/src/lib/ipc.ts has no SessionEvent of kind `{k}`");
+        }
+    }
 }

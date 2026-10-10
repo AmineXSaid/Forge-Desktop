@@ -263,7 +263,9 @@ pub async fn session_send(app: AppHandle, id: String, text: String, model: Optio
             session_id: id,
             resume,
             model,
-            permission_mode: (mode != "default").then_some(mode),
+            // Always explicit: the CLI's own default can be `auto` (it is when
+            // nonessential traffic is off), and the window must not say "Ask" then.
+            permission_mode: Some(mode),
             env,
             env_remove: vec![],
         };
@@ -413,6 +415,14 @@ pub fn window_action(window: WebviewWindow, action: String) -> Result<bool, Stri
         _ => return Err("unknown window action".into()),
     };
     result.map(|_| window.is_maximized().unwrap_or(false)).map_err(|e| e.to_string())
+}
+
+/// The page painted its first frame: show the window (it starts hidden, so
+/// there is no white flash).
+#[tauri::command]
+pub fn window_ready(window: WebviewWindow) -> Result<(), String> {
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())
 }
 
 /// An OS notification, only while the window is not focused. Capped.

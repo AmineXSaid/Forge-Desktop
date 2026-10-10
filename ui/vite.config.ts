@@ -1,12 +1,13 @@
-import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
+import { defineConfig } from 'vitest/config';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 
-// The window's UI. `pnpm dev` serves it for `tauri dev`; `pnpm build` writes ui/dist.
+// The window's UI. `pnpm ui:dev` serves it for `tauri dev`; `pnpm ui:build` writes ui/dist.
 export default defineConfig({
-  root: __dirname,
+  root: fileURLToPath(new URL('.', import.meta.url)),
   plugins: [svelte()],
   clearScreen: false,
   server: { port: 1420, strictPort: true },
-  build: { outDir: 'dist', emptyOutDir: true, target: 'es2022', sourcemap: false, chunkSizeWarningLimit: 600 },
+  build: { outDir: 'dist', emptyOutDir: true, target: 'es2022', sourcemap: false },
   test: { include: ['src/**/*.test.ts'], environment: 'node' },
 });

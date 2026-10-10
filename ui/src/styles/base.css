@@ -1,0 +1,112 @@
+/* Base: type, the shared controls (buttons, pills, inputs), and prose. */
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  background: var(--canvas);
+  color: var(--ink);
+  font: 400 14px/1.43 var(--font-sans);
+  font-feature-settings: 'lnum';
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+button, input, textarea, select { font: inherit; color: inherit; letter-spacing: inherit; }
+button { background: none; border: 0; padding: 0; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; border-radius: var(--r-button); }
+::selection { background: var(--sky-tint); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--ink-5); border-radius: 10px; border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background-color: var(--ink-4); }
+::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+
+/* buttons: 8px; one filled blue per surface */
+.btn {
+  height: 32px; padding: 0 14px; border-radius: var(--r-button);
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  font-size: 14px; font-weight: 500; white-space: nowrap; color: var(--ink);
+  transition: background var(--t) var(--ease), color var(--t) var(--ease), opacity var(--t) var(--ease);
+}
+.btn:hover { background: var(--hover); }
+.btn:active { background: var(--press); }
+.btn:disabled { opacity: 0.4; pointer-events: none; }
+.btn.primary { background: var(--blue); color: var(--blue-text); }
+.btn.primary:hover { background: var(--blue-hover); }
+.btn.ghost-blue { background: var(--sky-tint); color: var(--blue); }
+.btn.ghost-blue:hover { filter: brightness(0.97); }
+.btn.outline { box-shadow: inset 0 0 0 1px var(--line-strong); }
+.btn.outline:hover { background: var(--hover); }
+.btn.danger { color: var(--status-error-fg); }
+.btn.sm { height: 28px; padding: 0 10px; font-size: 13px; }
+.icon-btn {
+  width: 30px; height: 30px; border-radius: var(--r-button); display: inline-grid; place-items: center; color: var(--ink-3);
+  transition: background var(--t) var(--ease), color var(--t) var(--ease);
+}
+.icon-btn:hover { background: var(--hover); color: var(--ink); }
+.icon-btn.on { background: var(--press); color: var(--ink); }
+
+/* pills: status, chips, pickers */
+.pill {
+  display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 9px; border-radius: var(--r-pill);
+  font-size: 12px; font-weight: 500; letter-spacing: 0.01em; white-space: nowrap;
+}
+.pill.working { background: var(--status-working-bg); color: var(--status-working-fg); }
+.pill.needs { background: var(--status-needs-bg); color: var(--status-needs-fg); }
+.pill.error { background: var(--status-error-bg); color: var(--status-error-fg); }
+.pill.plan { background: var(--status-plan-bg); color: var(--status-plan-fg); }
+.pill.quiet { background: var(--hover); color: var(--ink-3); }
+
+.counts { font: 500 12px/1 var(--font-mono); display: inline-flex; gap: 6px; }
+.counts .add { color: var(--add-fg); }
+.counts .del { color: var(--del-fg); }
+
+.card { background: var(--card); border-radius: var(--r-card); box-shadow: inset 0 0 0 1px var(--line); }
+
+.input {
+  height: 34px; padding: 0 11px; border-radius: var(--r-button); background: var(--card); outline: 0; border: 0;
+  box-shadow: inset 0 0 0 1px var(--line-strong); font-size: 14px; user-select: text;
+  transition: box-shadow var(--t) var(--ease);
+}
+.input:focus { box-shadow: inset 0 0 0 1px var(--blue), 0 0 0 3px var(--focus); }
+.input::placeholder { color: var(--ink-4); }
+
+kbd { font: 500 11px/1 var(--font-sans); color: var(--ink-4); }
+
+/* prose: the agent's replies */
+.prose { font-size: 15px; line-height: 1.6; color: var(--ink); overflow-wrap: anywhere; user-select: text; }
+.prose > :first-child { margin-top: 0; }
+.prose > :last-child { margin-bottom: 0; }
+.prose p { margin: 0 0 12px; }
+.prose h1, .prose h2, .prose h3, .prose h4 { font-weight: 600; line-height: 1.27; letter-spacing: -0.011em; margin: 22px 0 8px; }
+.prose h1 { font-size: 22px; } .prose h2 { font-size: 19px; } .prose h3, .prose h4 { font-size: 16px; }
+.prose ul, .prose ol { margin: 0 0 12px; padding-left: 22px; }
+.prose li { margin: 4px 0; }
+.prose li::marker { color: var(--ink-4); }
+.prose strong { font-weight: 600; }
+.prose a { color: var(--blue); text-decoration: none; cursor: pointer; }
+.prose a:hover { text-decoration: underline; }
+.prose code { font: 13px/1.5 var(--font-mono); background: var(--inset); padding: 1px 5px; border-radius: var(--r-small); box-shadow: inset 0 0 0 1px var(--line); }
+.prose pre { margin: 0 0 14px; padding: 12px 14px; background: var(--card); border-radius: var(--r-card); box-shadow: inset 0 0 0 1px var(--line); overflow-x: auto; }
+.prose pre code { background: none; box-shadow: none; padding: 0; font-size: 13px; line-height: 1.6; }
+.prose blockquote { margin: 0 0 12px; padding: 2px 14px; border-left: 3px solid var(--line-strong); color: var(--graphite); }
+.prose table { border-collapse: collapse; margin: 0 0 14px; font-size: 14px; display: block; overflow-x: auto; }
+.prose th, .prose td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--line); }
+.prose th { font-weight: 600; color: var(--ink-3); font-size: 13px; }
+.prose hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+
+/* diffs */
+.diff { font: 12.5px/1.65 var(--font-mono); user-select: text; }
+.diff .ln { display: flex; white-space: pre; }
+.diff .num { width: 46px; flex: none; text-align: right; padding-right: 12px; color: var(--ink-4); user-select: none; }
+.diff .sign { width: 16px; flex: none; color: var(--ink-4); user-select: none; }
+.diff .code { flex: 1; padding-right: 14px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff .ln.a { background: var(--add-bg); } .diff .ln.a .sign { color: var(--add-fg); }
+.diff .ln.d { background: var(--del-bg); } .diff .ln.d .sign { color: var(--del-fg); }
+.diff .hunk { color: var(--ink-4); background: var(--inset); padding: 4px 14px; font-size: 12px; font-family: var(--font-sans); }
+
+.spinner { width: 12px; height: 12px; border-radius: 50%; border: 1.6px solid var(--ink-5); border-top-color: var(--blue); animation: spin 0.8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes rise { from { opacity: 0; transform: translateY(4px); } }

@@ -11,7 +11,7 @@
     "tauri": "tauri",
     "ui:dev": "vite --config ui/vite.config.ts",
     "ui:build": "vite build --config ui/vite.config.ts",
-    "ui:check": "svelte-check --tsconfig ui/tsconfig.json --workspace ui",
+    "ui:check": "svelte-check --workspace ui --tsconfig ./tsconfig.json",
     "ui:test": "vitest run --config ui/vite.config.ts",
     "test": "pnpm ui:test && cargo test --workspace"
   },

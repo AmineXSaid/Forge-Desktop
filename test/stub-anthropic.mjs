@@ -73,10 +73,13 @@ const EDIT_SUMMARY = [
 
 function reply(body) {
 	const model = body.model ?? 'stub-model';
-	const last = body.messages?.[body.messages.length - 1];
+	// The CLI may add its own context after the person's turn: read the last *user* message.
+	const messages = body.messages ?? [];
+	const at = messages.findLastIndex((m) => m.role === 'user');
+	const last = messages[at];
 	const blocks = Array.isArray(last?.content) ? last.content : [];
 	if (blocks.some((b) => b.type === 'tool_result')) {
-		const asked = body.messages?.[body.messages.length - 2];
+		const asked = messages.slice(0, at).findLast((m) => m.role === 'assistant');
 		const used = (Array.isArray(asked?.content) ? asked.content : []).find((b) => b.type === 'tool_use');
 		if (used?.name === 'Edit') return textEvents(model, EDIT_SUMMARY);
 		return textEvents(model, 'Done.');
@@ -103,6 +106,7 @@ const server = http.createServer((req, res) => {
 			try {
 				body = JSON.parse(raw);
 			} catch {}
+			if (process.env.STUB_LOG) console.error(JSON.stringify({ stream: body.stream, last: body.messages?.at(-1) }).slice(0, 1500));
 			const events = reply(body);
 			if (body.stream) return sse(res, events);
 			// Not streamed (title generation and the like): the final message.

@@ -23,13 +23,13 @@ You need:
 git clone https://github.com/AmineXSaid/forge-desktop
 cd forge-desktop
 pnpm install
-pnpm dev      # run it
-pnpm build    # installer: src-tauri\target\release\bundle\nsis\
+pnpm dev      # run it (Vite serves the UI, Tauri opens the window)
+pnpm build    # installer: target\release\bundle\nsis\
 ```
 
 `pnpm dev` keeps the terminal attached; close the window to stop. The
-installer is what you double-click; the exe under `target\debug` is a
-development build and needs `pnpm dev` running.
+installer is what you double-click; the development build
+under `target\debug` needs `pnpm dev` running.
 
 ## Where things are
 
@@ -43,7 +43,9 @@ development build and needs `pnpm dev` running.
 ## Tests
 
 ```bash
-pnpm test   # cargo test: unit tests and the CLI end-to-end test
+pnpm test        # UI unit tests (vitest), then cargo test for the workspace
+pnpm ui:check    # Svelte and TypeScript checks
+pnpm ui:dev      # the UI alone in a browser, against a demo backend (ui/src/lib/mock.ts)
 ```
 
 `cli_e2e` runs the real `claude` CLI against `test/stub-anthropic.mjs` (no

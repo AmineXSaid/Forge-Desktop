@@ -58,6 +58,9 @@
   --del-bg: rgba(246, 73, 50, 0.1);
   --del-fg: #c42a14;
 
+  /* Windows' own close-button red */
+  --win-close: #c42b1c;
+
   /* shape */
   --r-small: 4px;
   --r-button: 8px;

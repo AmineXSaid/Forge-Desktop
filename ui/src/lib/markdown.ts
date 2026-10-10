@@ -2,17 +2,18 @@
 // any markup is added, so model output can never inject HTML or script.
 // Links become <a data-href>, which the app opens through Rust (http/https only).
 
-export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+export const esc = (s: unknown): string => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
 
-function inline(text) {
+function inline(text: string): string {
   // Code spans first; their contents are not formatted further.
   const parts = String(text).split(/(`+[^`]*?`+)/g);
   return parts
     .map((part, i) => {
       if (i % 2 === 1) return `<code>${esc(part.replace(/^`+|`+$/g, ''))}</code>`;
       let s = esc(part);
-      s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, label, href) => `<a data-href="${href}" title="${href}">${label}</a>`);
-      s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (_, pre, url) => `${pre}<a data-href="${url}">${url}</a>`);
+      // Only web links become links; Rust opens nothing else either.
+      s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (all: string, label: string, href: string) => (/^https?:\/\//.test(href) ? `<a data-href="${href}" title="${href}">${label}</a>` : all));
+      s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, (_: string, pre: string, url: string) => `${pre}<a data-href="${url}">${url}</a>`);
       s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_]+)__/g, '<strong>$1</strong>');
       s = s.replace(/(^|[^*\w])\*([^*\s][^*]*?)\*(?!\*)/g, '$1<em>$2</em>').replace(/(^|[^_\w])_([^_\s][^_]*?)_(?!\w)/g, '$1<em>$2</em>');
       s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
@@ -21,19 +22,19 @@ function inline(text) {
     .join('');
 }
 
-const isTableSep = (l) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l);
-const cells = (l) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
+const isTableSep = (l: string) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l);
+const cells = (l: string) => l.trim().replace(/^\||\|$/g, '').split('|').map((c) => c.trim());
 
-export function markdown(src) {
+export function markdown(src: string): string {
   const lines = String(src ?? '').replace(/\r\n?/g, '\n').split('\n');
-  const out = [];
+  const out: string[] = [];
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
     const fence = line.match(/^\s*(```+|~~~+)\s*([\w+#.-]*)/);
     if (fence) {
       const close = fence[1];
-      const body = [];
+      const body: string[] = [];
       i++;
       while (i < lines.length && !lines[i].trim().startsWith(close)) body.push(lines[i++]);
       i++;
@@ -47,13 +48,13 @@ export function markdown(src) {
     if (line.includes('|') && i + 1 < lines.length && isTableSep(lines[i + 1])) {
       const head = cells(line);
       i += 2;
-      const rows = [];
+      const rows: string[][] = [];
       while (i < lines.length && lines[i].includes('|') && lines[i].trim()) rows.push(cells(lines[i++]));
       out.push(`<table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
       continue;
     }
     if (/^\s*>/.test(line)) {
-      const body = [];
+      const body: string[] = [];
       while (i < lines.length && /^\s*>/.test(lines[i])) body.push(lines[i++].replace(/^\s*>\s?/, ''));
       out.push(`<blockquote>${markdown(body.join('\n'))}</blockquote>`);
       continue;
@@ -61,7 +62,7 @@ export function markdown(src) {
     const li = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
     if (li) {
       const ordered = /\d/.test(li[2]);
-      const items = [];
+      const items: string[][] = [];
       while (i < lines.length) {
         const m = lines[i].match(/^(\s*)([-*+]|\d+[.)])\s+(.*)$/);
         if (m && m[1].length <= li[1].length + 1) { items.push([m[3]]); i++; continue; }
@@ -72,7 +73,7 @@ export function markdown(src) {
       out.push(`<${tag}>${items.map((it) => `<li>${inline(it.join(' ')).replace(/^\[ \]\s/, '☐ ').replace(/^\[x\]\s/i, '☑ ')}</li>`).join('')}</${tag}>`);
       continue;
     }
-    const para = [];
+    const para: string[] = [];
     while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|\s*```|\s*~~~|\s*>|\s*([-*+]|\d+[.)])\s)/.test(lines[i])) para.push(lines[i++]);
     if (!para.length) para.push(lines[i++]);
     out.push(`<p>${para.map(inline).join('<br>')}</p>`);

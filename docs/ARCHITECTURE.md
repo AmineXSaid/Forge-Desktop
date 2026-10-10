@@ -165,6 +165,10 @@ Everything else (sessions, providers, the UI, Windows integration) is Rust plus 
   - **Onboarding:** install Claude Code if it's missing (one click runs the official installer, with progress) → connect a provider → choose a folder.
   - **Command palette:** Ctrl+K.
 
+### UI versions
+- **v1 (now):** every screen works on the real CLI (welcome, thread, tool rows, permission/question/plan cards, Changes, Settings, light and dark), built on the tokens. It is a functional first pass; the owner judged its look not good enough.
+- **v2:** a dedicated design pass to sharpen the UI (layout, density, motion, iconography), after M2–M3 land, so it is designed around real sessions and providers rather than demo data.
+
 ## 5. Performance budgets (measured, enforced in CI where possible)
 
 | Metric | Budget | How |
